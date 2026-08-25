@@ -770,7 +770,7 @@ class Orchestrator:
             self._cognitive.state.active_mission_id = mission.task_id
             self._cognitive.state.mission_state = mission.status.value
             self._cognitive.store.save(self._cognitive.state)
-            ack = mission.acknowledgement or "Принято, сэр. Работаю."
+            ack = mission.acknowledgement or "Понял. Уже разбираюсь."
             state = self._new_state(text)
             self._session.push("user", text)
             self._session.to_state(state)
@@ -803,6 +803,17 @@ class Orchestrator:
                 _record_cognitive()
 
         output = assistant_output_from_outcome(outcome)
+        if bool(getattr(self._settings, "deepseek_brain_mode", False)):
+            display = re.sub(r",?\s*сэр\b", "", output.display_text, flags=re.IGNORECASE)
+            display = re.sub(r"\s+([.!?])", r"\1", display).strip()
+            speech = output.speech_text
+            if speech:
+                speech = re.sub(r",?\s*сэр\b", "", speech, flags=re.IGNORECASE)
+                speech = re.sub(r"\s+([.!?])", r"\1", speech).strip()
+            output = AssistantOutput(
+                display_text=display, speech_text=speech, debug=output.debug,
+                error=output.error, speak=output.speak, speech_mode=output.speech_mode,
+            )
         response = (output.display_text or "").strip()
         if not response:
             response = (
@@ -958,6 +969,10 @@ class Orchestrator:
         ack = pick_acknowledgement(
             intent, goal=goal, settings=self._settings, allow_model=False,
         )
+        # Emergency ACK stays deterministic and immediate, but the user-facing
+        # runtime no longer repeats the legacy honorific on every background job.
+        ack = re.sub(r",?\s*сэр\b", "", ack, flags=re.IGNORECASE)
+        ack = re.sub(r"\s+([.!?])", r"\1", ack).strip()
 
         # Подписка ставится ДО запуска, но task_id известен только после
         # submit(). Держим его в изменяемой ячейке и добираем уже
