@@ -18,7 +18,7 @@ class TTSQueue:
     def __init__(self, tts_engine, *, renderer: Optional[SpeechRenderer] = None) -> None:
         self._tts = tts_engine
         self._renderer = renderer or SpeechRenderer()
-        self._items: collections.deque[RenderedSpeech] = collections.deque()
+        self._items: collections.deque[tuple[int, RenderedSpeech]] = collections.deque()
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._paused = False
@@ -26,6 +26,8 @@ class TTSQueue:
         self._condition = threading.Condition(threading.RLock())
         self._stopped = threading.Event()
         self._stopped.set()
+        self._generation = 0
+        self._spoken: collections.deque[str] = collections.deque(maxlen=64)
 
     def start(self) -> None:
         with self._condition:
@@ -68,7 +70,7 @@ class TTSQueue:
         with self._condition:
             if not self._running:
                 return False
-            self._items.append(rendered)
+            self._items.append((self._generation, rendered))
             self._condition.notify()
         return True
 
@@ -85,7 +87,10 @@ class TTSQueue:
             return count
 
     def interrupt(self) -> None:
-        self.clear()
+        with self._condition:
+            self._generation += 1
+            self._items.clear()
+            self._condition.notify_all()
         try:
             self._tts.stop_speaking()
         except Exception:
@@ -123,6 +128,18 @@ class TTSQueue:
         with self._condition:
             return len(self._items)
 
+    @property
+    def generation(self) -> int:
+        """Monotonic turn generation; interruption invalidates older audio."""
+        with self._condition:
+            return self._generation
+
+    @property
+    def spoken_text(self) -> tuple[str, ...]:
+        """Text whose blocking playback completed in the current process."""
+        with self._condition:
+            return tuple(self._spoken)
+
     def _worker(self) -> None:
         try:
             while True:
@@ -133,7 +150,9 @@ class TTSQueue:
                         break
                     if not self._items:
                         continue
-                    item = self._items.popleft()
+                    generation, item = self._items.popleft()
+                    if generation != self._generation:
+                        continue
                     self._active = True
                 try:
                     speak_rendered = getattr(self._tts, "speak_rendered", None)
@@ -141,6 +160,9 @@ class TTSQueue:
                         speak_rendered(item)
                     else:
                         self._tts.speak(item.text, blocking=True)
+                    with self._condition:
+                        if generation == self._generation:
+                            self._spoken.append(item.text)
                 except Exception as exc:
                     log.error("TTSQueue worker ошибка: %s", exc)
                 finally:

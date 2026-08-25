@@ -288,20 +288,48 @@ class STTEngine:
 
 
 class VoiceActivityDetector:
-    """Optional VAD boundary. Uses webrtcvad when installed, otherwise silence-safe."""
-    def __init__(self, aggressiveness: int = 2) -> None:
+    """Optional VAD boundary: Silero ONNX first, WebRTC second, closed fallback."""
+    def __init__(self, aggressiveness: int = 2, *, prefer_silero: bool = True,
+                 threshold: float = 0.5, fail_closed: bool = False) -> None:
         self.aggressiveness = max(0, min(3, int(aggressiveness)))
+        self.threshold = max(0.0, min(1.0, float(threshold)))
+        self._fail_closed = bool(fail_closed)
         self._vad = None
+        self._silero = None
+        if prefer_silero:
+            try:
+                from silero_vad import load_silero_vad  # type: ignore
+                self._silero = load_silero_vad(onnx=True)
+            except Exception:
+                self._silero = None
         try:
             import webrtcvad  # type: ignore
             self._vad = webrtcvad.Vad(self.aggressiveness)
         except Exception:
             pass
     @property
-    def available(self) -> bool: return self._vad is not None
+    def available(self) -> bool: return self._silero is not None or self._vad is not None
+    def reset(self) -> None:
+        reset = getattr(self._silero, "reset_states", None)
+        if callable(reset):
+            reset()
     def is_speech(self, frame: bytes, sample_rate: int = 16000) -> bool:
-        if self._vad is None: return bool(frame and any(frame))
+        if not frame:
+            return False
+        if self._silero is not None and sample_rate in {8000, 16000}:
+            expected = 512 if sample_rate == 16000 else 256
+            if len(frame) == expected * 2:
+                try:
+                    import numpy as np
+                    import torch
+                    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                    probability = float(self._silero(torch.from_numpy(samples), sample_rate).item())
+                    return probability >= self.threshold
+                except Exception:
+                    pass
+        if self._vad is None:
+            return False if self._fail_closed else bool(any(frame))
         try:
             return bool(self._vad.is_speech(frame, sample_rate))
         except Exception:
-            return bool(frame and any(frame))
+            return False
