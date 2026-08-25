@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
 
@@ -18,7 +19,7 @@ from config.settings import Settings
 from core.memory.embedder import Embedder
 from core.utils.logger import get_logger
 
-__all__ = ["DocumentRAG", "read_pdf", "read_text_file", "read_document", "chunk_text", "DOCUMENTS_COLLECTION"]
+__all__ = ["DocumentHit", "DocumentRAG", "StudyQuestion", "StudySession", "read_pdf", "read_text_file", "read_document", "chunk_text", "DOCUMENTS_COLLECTION"]
 
 log = get_logger(__name__)
 
@@ -27,6 +28,84 @@ _SUPPORTED_EXTENSIONS = (".txt", ".md", ".pdf", ".text", ".docx", ".xlsx", ".ppt
 
 #: Имя коллекции ChromaDB для документов.
 DOCUMENTS_COLLECTION = "documents"
+
+
+@dataclass(frozen=True)
+class DocumentHit:
+    text: str
+    source: str
+    chunk_index: int
+    score: float | None = None
+    sha256: str = ""
+
+    @property
+    def citation(self) -> str:
+        return f"[{Path(self.source).name}#chunk-{self.chunk_index}]"
+
+
+@dataclass(frozen=True)
+class StudyQuestion:
+    id: str
+    prompt: str
+    topic: str
+    citation: str
+
+
+@dataclass
+class StudySession:
+    goal: str
+    hits: list[DocumentHit]
+    answers: dict[str, bool] = field(default_factory=dict)
+    weak_topics: set[str] = field(default_factory=set)
+
+    @classmethod
+    def from_hits(cls, goal: str, hits: List[DocumentHit]) -> "StudySession":
+        return cls(goal=goal.strip(), hits=list(hits))
+
+    def citations(self) -> list[str]:
+        return list(dict.fromkeys(hit.citation for hit in self.hits))
+
+    def next_question(self) -> Optional[StudyQuestion]:
+        candidates = self.hits
+        if self.weak_topics:
+            candidates = [h for h in self.hits if self._topic(h) in self.weak_topics] or self.hits
+        for hit in candidates:
+            question_id = hashlib.sha256(
+                f"{hit.source}:{hit.chunk_index}:{hit.text}".encode("utf-8")
+            ).hexdigest()[:12]
+            if self.answers.get(question_id) is True:
+                continue
+            topic = self._topic(hit)
+            return StudyQuestion(
+                id=question_id,
+                prompt=f"Объясни своими словами: {hit.text[:180]}",
+                topic=topic,
+                citation=hit.citation,
+            )
+        return None
+
+    def record_answer(self, question_id: str, answer: str, *, correct: bool) -> None:
+        self.answers[question_id] = bool(correct)
+        question = next((self._question_for(hit) for hit in self.hits
+                         if self._question_for(hit).id == question_id), None)
+        if question is not None:
+            if correct:
+                self.weak_topics.discard(question.topic)
+            else:
+                self.weak_topics.add(question.topic)
+
+    @staticmethod
+    def _topic(hit: DocumentHit) -> str:
+        words = [word.strip(".,:;!?()[]\"'").casefold() for word in hit.text.split()]
+        meaningful = [word for word in words if len(word) >= 4]
+        return " ".join(meaningful[:3]) or Path(hit.source).stem
+
+    @classmethod
+    def _question_for(cls, hit: DocumentHit) -> StudyQuestion:
+        question_id = hashlib.sha256(
+            f"{hit.source}:{hit.chunk_index}:{hit.text}".encode("utf-8")
+        ).hexdigest()[:12]
+        return StudyQuestion(question_id, f"Объясни своими словами: {hit.text[:180]}", cls._topic(hit), hit.citation)
 
 
 def read_pdf(path: Path) -> str:
@@ -345,3 +424,35 @@ class DocumentRAG:
         # идемпотентен — если вызывается повторно, дубля не будет).
         from core.safety import wrap_untrusted
         return [wrap_untrusted(str(doc), source="RAG") for doc in documents[0] if doc]
+
+    def search_evidence(self, query: str, top_k: int = 5) -> List[DocumentHit]:
+        """Return bounded retrieval hits with source provenance for citations."""
+        if not query or not query.strip() or not self._ensure():
+            return []
+        try:
+            results = self._collection.query(
+                query_texts=[query], n_results=max(1, min(20, int(top_k))),
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as exc:
+            log.error("Ошибка evidence-поиска по документам: %s", exc)
+            return []
+        documents = (results or {}).get("documents") or [[]]
+        metadatas = (results or {}).get("metadatas") or [[]]
+        distances = (results or {}).get("distances") or [[]]
+        hits: list[DocumentHit] = []
+        for index, document in enumerate(documents[0][:top_k]):
+            metadata = metadatas[0][index] if index < len(metadatas[0]) else {}
+            distance = distances[0][index] if index < len(distances[0]) else None
+            hits.append(DocumentHit(
+                text=str(document),
+                source=str((metadata or {}).get("source", "unknown")),
+                chunk_index=int((metadata or {}).get("chunk_index", index)),
+                score=None if distance is None else max(0.0, min(1.0, 1.0 - float(distance))),
+                sha256=str((metadata or {}).get("sha256", "")),
+            ))
+        return hits
+
+    def start_study_session(self, goal: str, *, top_k: int = 8) -> StudySession:
+        """Create a lightweight, source-grounded study loop on existing RAG."""
+        return StudySession.from_hits(goal, self.search_evidence(goal, top_k=top_k))

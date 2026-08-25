@@ -1,0 +1,2758 @@
+
+===== core/orchestrator.py =====
+"""Лёгкий оркестратор (без langchain/langgraph).
+
+``Orchestrator`` — полный цикл обработки одного витка:
+1. Intake: new_state, push в short_term
+2. Memory: retrieve (заполняет retrieved_context)
+3. Council: route (выбирает тир, генерирует ответ, решает про tools)
+4. Tools: если LLM вернула tool_call — execute_tool, результат в контекст, ре-спрос модели
+5. Response: генерация финального ответа
+6. Memory: remember_exchange (сохраняем в долгую память)
+7. Short-term: push assistant
+8. TTS: add_to_queue (если включено)
+
+Простой шаблон tool calling: если в ответе модели есть специальный маркер
+``TOOL_CALL:{"name": "...", "args": {...}}`` — парсим, выполняем, добавляем результат
+в контекст и переспрашиваем модель ОДИН раз.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import threading
+import time
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from config.settings import Settings
+from core.actions import DEFAULT_REGISTRY, ToolContext, execute_tool
+from core.authority import AuthorityProposal, AuthorityRequest, AuthorityStore, ProvenanceKind
+from core.agent import Agent, pick_acknowledgement
+from core.capabilities import CAPABILITIES
+from core.cognitive import CognitiveOrchestrator
+from core.memory import MemoryRetriever
+from core.memory.taste import TasteProfile
+from core.model_router import ModelRouter, classify_conversation, estimate_complexity
+from core.research import is_research_goal
+from core.router import CouncilRouter
+from core.router.intent_router import resolve_keyword_tool
+from core.understanding import (
+    NaturalMissionCoordinator, NaturalMissionInterpreter, QuickAnswerEngine,
+    Route, SemanticMode, UnderstandingLayer,
+)
+from core.state import JarvisState, ActionResult, new_state, push_message, trim_short_memory
+from core.task_runtime import Mission, MissionStatus, MissionTrigger, TaskEvent, TaskRuntime
+from core.voice import (
+    AssistantOutput, ErrorCategory, ErrorInfo, PiperTTS, SpeechRenderer, TTSQueue,
+    build_wake_word_detector, assistant_output_from_outcome, show_toast,
+)
+from core.proactive import Proactor, BackgroundScheduler
+from core.actions.reminders import TaskManager, get_default_manager
+from core.utils.logger import get_logger
+from core.brain import build_brain_fabric
+from core.intelligence import EvidenceRecord, LatencyBudget, TutorEngine, UniversalIntake
+from core.cognitive_kernel import (
+    CapabilityGraph,
+    CapabilityManifest,
+    CognitiveKernel,
+    EvidenceRecordV2,
+)
+
+__all__ = ["Orchestrator"]
+
+log = get_logger(__name__)
+
+# Регулярка для извлечения tool_call из ответа модели
+_TOOL_CALL_PATTERN = re.compile(
+    r"TOOL_CALL:\s*(\{.*?\})",
+    re.DOTALL
+)
+
+
+class Orchestrator:
+    """Единый оркестратор витка обработки запроса."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        output_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        Args:
+            settings: конфигурация.
+            output_callback: функция для вывода ответа пользователю (текст -> None).
+                По умолчанию: print + TTS queue + toast.
+        """
+        self._settings = settings
+        self._output_callback = output_callback or self._default_output
+
+        # ЕДИНЫЙ роутер моделей — его делят CouncilRouter и Agent (P5 §5.7),
+        # чтобы любой вход (консоль/WebSocket) маршрутизировался одинаково.
+        self._brain = build_brain_fabric(settings)
+        self._model_router = ModelRouter(settings, brain_fabric=self._brain)
+
+        # Инициализация компонентов
+        self._council = CouncilRouter(
+            settings, model_router=self._model_router, brain_fabric=self._brain,
+        )
+        self._session = None  # будет создан в start()
+        self._memory = MemoryRetriever(settings)
+        self._registry = DEFAULT_REGISTRY
+
+        # Canonical mission authority. Existing TaskRuntime remains the
+        # compatibility execution surface while every submitted goal gets an
+        # idempotent ledger record for resume/undo/evidence.
+        self._kernel = CognitiveKernel(
+            settings.data_dir / "cognitive_kernel",
+            capability_graph=CapabilityGraph(),
+            intake=UniversalIntake(),
+        )
+        self._register_kernel_capabilities()
+
+        # Understanding Layer (Фаза 1): единственная точка классификации
+        # ввода. Создаётся ДО агента — лёгкий regex-конструктор, без моделей.
+        self._understanding = UnderstandingLayer()
+        # Quick-Answer путь (Фаза 2, без API-ключа): вопрос -> локальная
+        # Qwen решает -> DuckDuckGo(+Bing fallback) -> сжатие -> ответ 1-3 сек.
+        # Не требует внешних ключей; модель берётся из тира FAST лениво.
+        # Память (дыры 1/3): ретривер — живой контекст (self._living.answer_context),
+        # saver — долговременная память (self._memory.remember_exchange). Оба
+        # резолвятся ЛЕНИВО (при вызове), т.к. _living создаётся позже.
+        self._quick_answer = QuickAnswerEngine(
+            settings,
+            memory_retriever=lambda q: self._quick_memory_retrieve(q),
+            memory_saver=lambda q, a: self._remember_exchange_background(q, a),
+        )
+
+        # Wake word (Фаза 3, MIT): детектирует слово-пробуждение и будит
+        # слушателя. Создаётся лениво через фабрику — тяжёлые движки
+        # подхватятся только при enabled=True и установленных зависимостях.
+        self._wake_word = build_wake_word_detector(
+            settings,
+            on_detected=self._on_wake_word_detected,
+        )
+
+        # Профиль вкусов (память/вкусы, MIT-паттерн): структурно копит, что
+        # пользователь любит/не любит слушать (жанры, исполнители, настроения).
+        # Сценарий: «поставь музыку под настроение» -> score() ранжирует треки.
+        # Store (RelationshipMemoryStore) подключается после создания агента.
+        self._taste = TasteProfile(settings.data_dir / "taste")
+
+        # --- Агентное ядро J.A.R.V.I.S. 3.0 (§3, §6) ---
+        # Агент исполняет миссии, TaskRuntime даёт им асинхронную жизнь.
+        # НЕТ watchdog по умолчанию: миссия живёт столько, сколько нужно (§4).
+        self._agent = Agent(
+            settings, council=self._council, model_router=self._model_router,
+            brain_fabric=self._brain,
+        )
+        # Подключаем вкусовой профиль к сущностной памяти, чтобы устойчивые
+        # предпочтения (жанры/исполнители) записывались и в relationship store.
+        try:
+            rel = getattr(self._agent, "relationship_memory", None)
+            if rel is not None:
+                self._taste._store = rel
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Taste: store не подключён (%s)", exc)
+        # Shadow Engine is owned by Agent but its cadence belongs to the
+        # orchestrator lifecycle, alongside other background services.
+        self._shadow = self._agent._shadow
+        self._shadow.attach_brain_fabric(self._brain)
+        self._runtime = TaskRuntime(
+            default_watchdog_sec=None,
+            persistence_dir=settings.data_dir / "missions",
+            durable_runner=self._durable_mission_runner,
+            world_state=self._agent.executive.world,
+        )
+        self._agent.attach_task_runtime(self._runtime)
+        self._authority = AuthorityStore(
+            settings.data_dir / "authority", mission_resolver=self._runtime.get,
+        )
+        self._authority_unsubscribe = self._authority.bind_runtime(self._runtime)
+        self._agent.attach_authority(self._authority)
+        self._natural_missions = NaturalMissionCoordinator(
+            self._runtime, self._authority,
+            NaturalMissionInterpreter(
+                integrations=self._configured_integrations(),
+                structured_backend=(
+                    self._semantic_brain_interpret
+                    if bool(getattr(settings, "deepseek_brain_mode", False)) else None
+                ),
+            ),
+        )
+        from core.living import LivingIntelligence
+        self._living = LivingIntelligence(
+            settings.data_dir / "living",
+            task_runtime=self._runtime,
+            shadow_engine=self._shadow,
+            relationship_learner=self._agent.preference_learner,
+        )
+        self._runtime.subscribe(self._living.observe_mission_event)
+
+        # Sprint 13: one continuity/state coordinator above the existing
+        # owners. It references their real registries and policies rather than
+        # cloning tools, memory, personality, attention, or Shadow behavior.
+        self._cognitive = CognitiveOrchestrator(
+            settings.data_dir / "cognitive",
+            registry=self._registry,
+            capability_registry=CAPABILITIES,
+            providers={"shadow": self._shadow, "brain": self._brain},
+            task_runtime=self._runtime,
+            living_context=self._living.context,
+            memory_hierarchy=self._agent._memory_hierarchy,
+            capability_planner=self._agent._capability_planner,
+            personality=self._agent.personality,
+            shadow_engine=self._shadow,
+            attention_manager=self._living.decisions.attention,
+            goal_tracker=self._living.context.goal_tracker,
+            brain_fabric=self._brain,
+        )
+
+        # TTS
+        self._tts = PiperTTS(settings)
+        self._speech_renderer = SpeechRenderer(settings.voice)
+        self._tts_queue = TTSQueue(self._tts, renderer=self._speech_renderer)
+
+        # Reminders
+        self._task_manager = get_default_manager()
+
+        # Proactive
+        self._proactor = Proactor(
+            settings=settings,
+            council=self._council,
+            output_callback=self._proactive_output,
+            reminder_check_callback=self._check_reminders,
+        )
+        self._scheduler = BackgroundScheduler(
+            settings=settings,
+            task_manager=self._task_manager,
+            nightly_callback=self._nightly_consolidation,
+        )
+
+        self._running = False
+        self._lock = threading.Lock()
+        self._warmup_thread: Optional[threading.Thread] = None
+        self._warmup_diagnostics: Dict[str, Any] = {
+            "backend": "unknown",
+            "model": (
+                str(getattr(settings, "deepseek_model", ""))
+                if bool(getattr(settings, "deepseek_brain_mode", False))
+                else "local-runtime"
+            ),
+            "n_gpu_layers": 0,
+            "warmup_ms": 0.0,
+            "ready_before_first_request": False,
+        }
+        self._warmup_ready = threading.Event()
+        self._intake = UniversalIntake()
+        self._tutor = TutorEngine()
+
+    def _configured_integrations(self) -> set[str]:
+        """Return connector names configured in settings, without loading SDKs."""
+        raw = getattr(self._settings, "integrations", None)
+        if isinstance(raw, Mapping):
+            return {
+                str(name).casefold() for name, config in raw.items()
+                if config is True or bool(getattr(config, "configured", False))
+                or (isinstance(config, Mapping) and bool(config.get("configured")))
+            }
+        return set()
+
+    def _semantic_brain_interpret(self, text: str, contract: Mapping[str, Any]) -> Mapping[str, Any]:
+        """One bounded structured Brain call; runtime/policy validate its proposal."""
+
+===== core/agent.py =====
+"""Agent — контроллер миссии J.A.R.V.I.S. (§3, §8, §9, §10, §11, §14).
+
+Полный цикл ОДНОЙ задачи пользователя:
+
+    USER GOAL -> INTENT -> RISK -> CONTEXT -> MODE -> PLAN
+              -> TOOL RETRIEVAL -> EXECUTION -> VERIFICATION
+              -> REPAIR (если ошибка) -> RESULT -> MEMORY / SKILL
+
+Ключевые принципы ТЗ:
+
+    * §3  Цикл САМ СОКРАЩАЕТСЯ для простых задач. "Открой Telegram" не
+          запускает multi-agent workflow — идёт FAST PATH.
+    * §4  НЕТ искусственного лимита мышления. В этом модуле нет ни одной
+          проверки вида "elapsed > N -> fail". Реальные таймауты живут
+          только внутри инструментов (сеть/процесс).
+    * §5  ACKNOWLEDGING — отдельная быстрая стадия, без тяжёлой модели.
+    * §8  UNKNOWN != IMPOSSIBLE. Нет инструмента -> исследуем и строим метод.
+    * §10 Ошибка -> диагноз -> патч -> retry, а не капитуляция.
+    * §14 "Готово" говорим ТОЛЬКО после фактической верификации.
+    * §21 HIGH risk -> запрос подтверждения, а не тихое выполнение.
+
+Модуль переиспользует существующие компоненты (§26 — эволюция, не reset):
+    core.actions      — инструменты и исполнитель
+    core.router       — CouncilRouter / keyword intent
+    core.task_runtime — Mission / события / статусы
+    core.repair       — RepairLoop
+    core.verifier     — фактические проверки
+    core.skill_forge  — навыки
+    core.ingest       — большие входы
+"""
+
+from __future__ import annotations
+
+import re
+import json
+import threading
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+import uuid
+
+from config.settings import Settings
+from core.actions import DEFAULT_REGISTRY
+from core.actions.base import ActionResult, ToolContext
+from core.actions.executor import execute_tool
+from core.capabilities import CAPABILITIES, Capability, describe_tools_for_model
+from core.ingest import ingest_text
+from core.memory.knowledge_graph import GraphMemoryStore
+from core.llm import (
+    BackendConfigError,
+    BackendUnavailable,
+    Tier,
+    ToolsNotSupportedError,
+    breaker,
+    get_llm_backend,
+    get_offline_backend,
+)
+from core.memory.budget import fit_messages_to_budget
+from core.memory.facts import detect_tone, learn_facts
+from core.memory.profile import get_relevant_profile_context
+from core.memory.relationship import MemoryHierarchy, PreferenceLearner, RelationshipMemoryStore
+from core.memory.short_term import SessionManager
+from core.model_router import ModelRouter, RoutingDecision, classify_conversation
+from core.personality import PersonalityEngine
+from core.repair import RepairLoop
+from core.research import ResearchEngine, is_research_goal
+from core.router.intent_router import resolve_keyword_tool, split_compound_commands
+from core.router.route_guard import validate_tool_selection
+from core.safety import RiskAssessment, assess_risk
+from core.redact import redact_args
+from core.skill_forge import SkillForge, SkillManifest, SkillStatus
+from core.structured import (
+    PLAN_SCHEMA_HINT, AnswerStreamExtractor, ToolCallDecision,
+    parse_structured, validate_tool_call,
+)
+from core.task_runtime import (
+    EVENT_CONFIRMATION_REQUIRED,
+    EVENT_PLAN_READY,
+    EVENT_REPAIR_COMPLETED,
+    EVENT_REPAIR_STARTED,
+    EVENT_STREAM_CHUNK,
+    EVENT_STEP_COMPLETED,
+    EVENT_STEP_STARTED,
+    EVENT_TASK_FAILED,
+    EVENT_TOOL_CALLED,
+    EVENT_TOOL_RESULT,
+    EVENT_VERIFICATION,
+    Mission,
+    MissionStatus,
+)
+from core.utils.logger import get_logger
+from core.verifier import VerificationResult, verify_action_result
+from core.executive import ExecutiveMind
+from core.intelligence import ResearchPending, SkillCatalog, TeachingSession, TutorEngine, UniversalIntake
+
+__all__ = ["Agent", "AgentConfig", "AgentOutcome", "ACK_PHRASES", "pick_acknowledgement"]
+
+log = get_logger(__name__)
+
+#: Префикс ошибки планирования «модель недоступна» (сеть/провайдер/ключ).
+#: Такая ошибка — НЕ «не умею» (§29): это временный сбой инфраструктуры,
+#: и пользователь должен получить короткую честную фразу без сырых деталей
+#: и без создания черновика навыка.
+MODEL_ERROR_PREFIX = "model_error:"
+
+_MEDIA_NETWORK_MARKERS = (
+    "youtube", "ютуб", "spotify", "спотифай", "в сети", "онлайн",
+    "в интернете", "internet", "online",
+)
+
+
+def _media_network_is_explicit(goal: str) -> bool:
+    lowered = " ".join((goal or "").casefold().split())
+    return any(marker in lowered for marker in _MEDIA_NETWORK_MARKERS)
+
+
+def _media_query_is_user_text(goal: str, query: str) -> bool:
+    """Accept a network query only when its words occur in the user goal."""
+    goal_words = {word for word in re.findall(r"[\wа-яё]+", (goal or "").casefold()) if len(word) > 2}
+    query_words = {word for word in re.findall(r"[\wа-яё]+", (query or "").casefold()) if len(word) > 2}
+    return bool(query_words) and query_words <= goal_words
+
+#: Prefix retained for routing internal model failures. The visible response
+#: is built from the exact exception in ``_handle_model_unavailable``.
+MODEL_UNAVAILABLE_TEXT = "Ошибка локальной модели:"
+
+
+def _hide_reasoning_stream(cumulative: str) -> str:
+    """Прячет служебные ``<think>``-блоки из НАРАСТАЮЩЕГО текста стрима.
+
+    Закрытый блок вырезается целиком; незакрытый (модель ещё думает) —
+    скрывает всё после его начала. Применяется только в прямом разговорном
+    режиме (Sprint 2), где пользователю идёт сырой текст модели.
+    """
+    out = re.sub(r"<think>.*?</think>", "", cumulative, flags=re.DOTALL | re.IGNORECASE)
+    if "<think>" in out.lower():
+        idx = out.lower().rfind("<think>")
+        out = out[:idx]
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  §5 — FIRST ACKNOWLEDGEMENT (быстро, без тяжёлой модели)
+# --------------------------------------------------------------------------- #
+
+ACK_PHRASES: Dict[str, str] = {
+    "app": "Принято, сэр.",
+    "file": "Сейчас проверю.",
+    "web": "Разбираюсь.",
+    "browser": "Понял, сэр.",
+    "system": "Принято.",
+    "media": "Понял, сэр.",
+    "none": "Понял, сэр. Разбираюсь.",
+}
+
+
+def pick_acknowledgement(intent: str, goal: str = "",
+                          settings: Optional["Settings"] = None,
+                          *, allow_model: bool = True) -> str:
+    """Мгновенное, ЖИВОЕ подтверждение приёма задачи (§5, П1 §1.2).
+
+    Базовая фраза выбирается по намерению (как раньше — мгновенно),
+    затем, если доступна ЛОКАЛЬНАЯ модель (Qwen 4B на лице) и задан
+    контекст цели, фраза ОБОГАЩАЕТСЯ коротким контекстным вариантом
+    от модели (чтобы ACK звучал как живая сущность, а не робот-заглушка).
+
+    ЖЁСТКИЙ FALLBACK (критично для офлайн-тестов и надёжности): при
+    любой ошибке/недоступности локальной модели, таймауте или пустом
+    ответе — возвращается базовая canned-фраза по intent. Стадия
+    ACKNOWLEDGING остаётся мгновенной и НИКОГДА не падает.
+    """
+    base = ACK_PHRASES.get(intent, ACK_PHRASES["none"])
+
+    # The live mission path passes ``allow_model=False``.  An ACK is a
+    # transport guarantee, not a second inference request: loading a GGUF or
+    # waiting on a provider here is exactly the minute-long pause reported by
+    # the real UI.  The opt-in model enrichment remains for callers that
+    # explicitly want it (and for the existing presentation tests).
+    if not allow_model or not goal or not goal.strip() or settings is None:
+        return base
+
+    try:
+        from core.llm import get_llm_backend, Tier
+        from core.llm.backend import BackendUnavailable, BackendConfigError
+
+        backend = get_llm_backend(settings, Tier.FAST)
+        prompt = (
+            f"Ты — АТЛАС. Пользователь только что дал команду: \"{goal}\". "
+            f"Сгенерируй ОДНУ короткую (до 5 слов) фразу подтверждения приёма "
+            f"в стиле живого дворецкого, без приветствий и пояснений. "
+            f"Не начинай выполнять задачу. Только подтверди, что понял. "
+            f"Примеры стиля: \"{base}\", \"Есть, сэр.\", \"Слушаюсь.\""
+        )
+        ack = backend.direct(prompt, max_tokens=24, temperature=0.4)
+        ack = (ack or "").strip().strip('"\'‘’“”')
+        # Фильтруем сырьё: если модель вернула мусор/JSON/слишком длинно —
+        # откатываемся на базу (чтобы голос не читал сырьё).
+        if not ack or len(ack) > 40 or ack.startswith("{") or "\n" in ack:
+            return base
+        return ack
+    except (BackendUnavailable, BackendConfigError, Exception) as _exc:  # noqa: BLE001
+        # Любой сбой локальной модели — мгновенный откат на базовую фразу.
+        log.debug("ACK LLM-генерация недоступна, fallback на canned: %s", _exc)
+        return base
+
+
+# --------------------------------------------------------------------------- #
+#  Конфигурация и результат
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class AgentConfig:
+    """Настройки поведения агента (без единого лимита на время §4)."""
+
+    max_tool_retrieval: int = 5        # сколько инструментов показываем модели (§12)
+    max_discovered_tools: int = 8      # schemas after full-surface discovery
+    max_plan_steps: int = 8            # разумный потолок шагов плана
+    max_repair_attempts: int = 3       # §11 — ограниченный, но не единичный repair
+    max_structured_retries: int = 2    # §13 — повторный запрос при плохом JSON
+    # Жёсткий потолок вызовов инструментов за ОДИН пользовательский запрос
+    # (составные команды и repair итого). Раньше settings.limits.
+    # max_action_iterations существовал в конфиге, но нигде не применялся —
+    # автономный цикл мог крутиться без жёсткого предела (дыра B1).
+    max_action_iterations: int = 6
+    large_input_chars: int = 6000      # §7 — выше порога включаем ingest
+    auto_confirm_high_risk: bool = False   # §21 — HIGH требует человека
+    enable_skill_forge: bool = True    # §9
+    confirmation_timeout_sec: float = 30.0  # П1 §1.3: таймаут ожидания подтверждения -> авто-reject
+
+
+@dataclass
+class AgentOutcome:
+    """Итог работы агента по миссии."""
+
+    text: str
+    verified: bool = False
+    verification: Optional[VerificationResult] = None
+    tool_used: Optional[str] = None
+    needs_confirmation: bool = False
+    confirmation_id: Optional[str] = None
+    risk: Optional[RiskAssessment] = None
+    mode: str = "conversation"
+    trace: List[str] = field(default_factory=list)
+    #: Sprint 3 STEP 5: ответ пришёл с фолбэк-модели, а не с основной
+    #: (quality indicator для UI/TTS — не маскируем деградацию).
+    degraded: bool = False
+    #: Internal observed result for bounded multi-step planning. Never sent to UI.
+    action_result: Optional[ActionResult] = field(default=None, repr=False)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "text": self.text,
+            "verified": self.verified,
+            "verification": self.verification.to_dict() if self.verification else None,
+            "tool_used": self.tool_used,
+            "needs_confirmation": self.needs_confirmation,
+            "confirmation_id": self.confirmation_id,
+            "risk": self.risk.to_dict() if self.risk else None,
+            "mode": self.mode,
+            "trace": list(self.trace),
+
+===== core/voice/tts.py =====
+"""Локальный Russian-only Text-to-Speech через Piper.
+
+Voice выбирается конфигурацией, а не эвристикой языка входной строки. Это
+исключает старый путь ``Error 455 -> English jarvis-medium``.
+
+Если piper_binary_path / piper_model_path не найдены — ``is_available()`` = False,
+``speak()`` логирует warning и не падает (текстовый режим остаётся рабочим).
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import tempfile
+import threading
+import time
+import wave
+from array import array
+from pathlib import Path
+from typing import Optional
+
+from config.settings import Settings
+from core.utils.logger import get_logger
+
+__all__ = ["PiperTTS"]
+
+log = get_logger(__name__)
+
+# Регулярка для определения кириллицы
+class VoiceConfig:
+    """Конфигурация одного голоса Piper."""
+
+    def __init__(
+        self,
+        name: str,
+        model_path: Path,
+        config_path: Path,
+        language: str = "ru",
+        speaker_id: int = 0,
+        length_scale: float = 1.0,
+        noise_scale: float = 0.667,
+        noise_w: float = 0.8,
+    ) -> None:
+        self.name = name
+        self.model_path = model_path
+        self.config_path = config_path
+        self.language = language
+        self.speaker_id = speaker_id
+        self.length_scale = length_scale
+        self.noise_scale = noise_scale
+        self.noise_w = noise_w
+
+
+class PiperTTS:
+    """Обёртка над Piper TTS с поддержкой нескольких голосов."""
+
+    def __init__(self, settings: Settings) -> None:
+        """
+        Args:
+            settings: конфигурация (voice.piper_binary_path, voice.piper_model_path,
+                      voice.piper_voices - список дополнительных голосов).
+        """
+        self._settings = settings
+        self._voice_settings = getattr(settings, "voice", None)
+        language = str(getattr(self._voice_settings, "language", "ru")).lower()
+        self._target_language = language.split("_")[0].split("-")[0]
+        self._provider = str(getattr(self._voice_settings, "provider", "piper")).lower()
+        self._binary = self._resolve_binary()
+
+        # Загружаем конфигурацию голосов
+        self._voices: dict[str, VoiceConfig] = {}
+        self._default_voice: Optional[str] = None
+        self._load_voices()
+
+        self._available = (
+            self._provider == "piper" and self._binary is not None
+            and any(voice.model_path.is_file() for voice in self._voices.values())
+        )
+
+        if self._available:
+            voice_names = ", ".join(self._voices.keys())
+            log.info("PiperTTS инициализирован: binary=%s, voices=[%s]", self._binary, voice_names)
+        else:
+            log.warning(
+                "PiperTTS недоступен: binary=%s, voices=%d. TTS отключён (текстовый режим).",
+                self._binary,
+                len(self._voices),
+            )
+
+    def _resolve_binary(self) -> Optional[Path]:
+        """Находит Piper, предпочитая проверенный runtime внутри проекта.
+
+        ``piper`` из PATH не является стабильной зависимостью: пакет Piper
+        1.3.0 может находиться там вместо совместимого с текущими ONNX-голосами
+        runtime. Явный существующий путь из конфигурации всё ещё имеет высший
+        приоритет, затем используется локальная проверенная сборка.
+        """
+        voice = getattr(self._settings, "voice", None)
+        if voice and getattr(voice, "piper_binary_path", None):
+            p = Path(voice.piper_binary_path).expanduser()
+            if not p.is_absolute():
+                home = os.environ.get("JARVIS_HOME", "").strip()
+                p = (Path(home) if home else Path.cwd()) / p
+            if p.exists():
+                return p.resolve()
+
+        models_dir = Path(getattr(self._settings, "models_dir", Path("data/models")))
+        # Source layout keeps Piper under data/runtime.  The portable
+        # installer places it beside llama-server under runtime/piper, so the
+        # backend still resolves the exact validated binary after Tauri moves
+        # the resource tree to another machine.
+        bundled_candidates = [
+            models_dir.parent / "runtime" / "piper" / "piper.exe",
+            models_dir.parent.parent / "runtime" / "piper" / "piper.exe",
+        ]
+        home = os.environ.get("JARVIS_HOME", "").strip()
+        if home:
+            bundled_candidates.append(Path(home) / "runtime" / "piper" / "piper.exe")
+        for bundled in bundled_candidates:
+            if bundled.exists():
+                return bundled.resolve()
+
+        # Стандартные места установки
+        candidates = [
+            Path.home() / ".local" / "bin" / "piper.exe",
+            Path("C:/Program Files/piper/piper.exe"),
+            Path("C:/Program Files (x86)/piper/piper.exe"),
+        ]
+        for c in candidates:
+            try:
+                if c.exists():
+                    return c.resolve()
+            except Exception:
+                pass
+        import shutil
+        discovered = shutil.which("piper")
+        if discovered:
+            return Path(discovered).resolve()
+        return None
+
+    def _load_voices(self) -> None:
+        """Загружает конфигурацию голосов из settings."""
+        voice_cfg = getattr(self._settings, "voice", None)
+        if not voice_cfg or self._provider != "piper":
+            return
+
+        # Основной голос (для обратной совместимости)
+        main_model = getattr(voice_cfg, "resolved_primary_piper_model", None)
+        if main_model is None:
+            main_model = getattr(voice_cfg, "resolved_piper_model", None)
+        if main_model and main_model.exists():
+            config_path = main_model.with_suffix(main_model.suffix + ".json")
+            if not config_path.exists():
+                # Попробуем найти .onnx.json
+                config_path = main_model.with_name(main_model.name + ".json")
+
+            lang = self._model_language(config_path, main_model.stem)
+            if lang != self._target_language:
+                log.warning("Piper model %s skipped: language=%s, required=%s",
+                            main_model.name, lang, self._target_language)
+                main_model = None
+
+        if main_model and main_model.exists():
+            config_path = main_model.with_suffix(main_model.suffix + ".json")
+            if not config_path.exists():
+                config_path = main_model.with_name(main_model.name + ".json")
+            lang = self._model_language(config_path, main_model.stem)
+            # ВАЖНО: не переопределяем noise/length параметры модели своими
+            # громкими значениями, если сама модель в своём .onnx.json не
+            # задаёт их. Иначе голос искажается («robot/garbled» звук,
+            # похожий на "err... node"). Piper сам возьмёт родные значения
+            # из конфигурации модели.
+            use_model_tuning = config_path.exists() and self._config_has_tuning(config_path)
+            self._voices[main_model.stem] = VoiceConfig(
+                name=main_model.stem,
+                model_path=main_model,
+                config_path=config_path if config_path.exists() else main_model,
+                language=lang,
+                speaker_id=getattr(voice_cfg, "piper_speaker_id", 0),
+                length_scale=getattr(voice_cfg, "piper_length_scale", 1.0) if use_model_tuning else 1.0,
+                noise_scale=getattr(voice_cfg, "piper_noise_scale", 0.667) if use_model_tuning else 0.0,
+                noise_w=getattr(voice_cfg, "piper_noise_w", 0.8) if use_model_tuning else 0.0,
+            )
+            self._default_voice = main_model.stem
+
+        # Keep the configured Russian voice selectable even before its model
+        # is downloaded.  Availability still requires a real model file above.
+        if main_model and not main_model.exists():
+            config_path = main_model.with_suffix(main_model.suffix + ".json")
+            if not config_path.exists():
+                config_path = main_model.with_name(main_model.name + ".json")
+            lang = self._model_language(config_path, main_model.stem)
+            if lang == self._target_language:
+                self._voices[main_model.stem] = VoiceConfig(
+                    name=main_model.stem,
+                    model_path=main_model,
+                    config_path=config_path,
+                    language=lang,
+                    speaker_id=getattr(voice_cfg, "piper_speaker_id", 0),
+                )
+                self._default_voice = self._default_voice or main_model.stem
+
+        # Дополнительные голоса из piper_voices (если заданы)
+        extra_voices = getattr(voice_cfg, "piper_voices", None)
+        if extra_voices and isinstance(extra_voices, list):
+            for v in extra_voices:
+                if not isinstance(v, dict):
+                    continue
+                model_path = v.get("model_path")
+                if not model_path:
+                    continue
+                p = Path(model_path).expanduser()
+                if not p.exists():
+                    continue
+
+                lang = str(v.get("language", "ru")).lower()
+                if lang != self._target_language:
+                    continue
+                config_path = p.with_suffix(p.suffix + ".json")
+                if not config_path.exists():
+                    config_path = p.with_name(p.name + ".json")
+
+                self._voices[p.stem] = VoiceConfig(
+                    name=p.stem,
+                    model_path=p,
+                    config_path=config_path if config_path.exists() else p,
+                    language=lang,
+                    speaker_id=v.get("speaker_id", 0),
+                    length_scale=v.get("length_scale", 1.0),
+                    noise_scale=v.get("noise_scale", 0.667),
+                    noise_w=v.get("noise_w", 0.8),
+                )
+                if not self._default_voice:
+                    self._default_voice = p.stem
+
+        # Авто-добавление известных голосов из data/models/piper/
+        piper_dir = self._settings.models_dir / "piper"
+        if piper_dir.exists():
+            for onnx_file in piper_dir.glob("*.onnx"):
+                if onnx_file.stem in self._voices:
+                    continue
+                config_path = onnx_file.with_suffix(".json")
+                if not config_path.exists():
+                    config_path = onnx_file.with_name(onnx_file.name + ".json")
+                lang = self._model_language(config_path, onnx_file.stem)
+                if lang != self._target_language:
+                    continue
+
+                self._voices[onnx_file.stem] = VoiceConfig(
+                    name=onnx_file.stem,
+                    model_path=onnx_file,
+                    config_path=config_path if config_path.exists() else onnx_file,
+                    language=lang,
+                )
+                if not self._default_voice:
+                    self._default_voice = onnx_file.stem
+
+    @staticmethod
+    def _which(cmd: str) -> bool:
+
+===== core/voice/stt.py =====
+"""Speech-to-Text (STT) — минимальная рабочая версия (P5 §5.9).
+
+Реализация поверх ``faster-whisper`` (MIT, быстрая локальная интеграция).
+Все тяжёлые зависимости импортируются LAZY — модуль не падает при
+отсутствии библиотек, а честно сообщает, что нужно установить.
+
+Поведение:
+    * ``settings.voice.stt_enabled = False`` (по умолчанию) ->
+      ``is_available()`` возвращает False, вызовы кидают ``NotImplementedError``
+      с понятным сообщением (обратная совместимость со старой заглушкой).
+    * ``stt_enabled = True`` и ``faster-whisper`` установлен ->
+      РЕАЛЬНОЕ распознавание (``transcribe_file`` / ``listen_once``).
+    * ``stt_enabled = True``, но библиотека не стоит ->
+      ``is_available()`` = False, вызовы кидают ``RuntimeError`` с инструкцией
+      по установке (а не молча «не реализовано»).
+
+Бэкенд выбирается автоматически:
+    ``faster-whisper`` (приоритет, MIT, локально, без юр. рисков).
+"""
+
+from __future__ import annotations
+
+import io
+import numbers
+import tempfile
+import time
+from typing import List, Optional, Tuple
+
+from config.settings import Settings
+from core.utils.logger import get_logger
+
+__all__ = ["STTEngine", "STT_DISABLED_MSG", "STT_NEED_BACKEND_MSG", "VoiceActivityDetector"]
+
+log = get_logger(__name__)
+
+#: Сообщение, когда STT отключён флагом.
+STT_DISABLED_MSG = (
+    "STT отключён. Установите settings.voice.stt_enabled=True "
+    "для работы распознавания речи."
+)
+
+#: Инструкция, когда включено, но библиотека не установлена.
+STT_NEED_BACKEND_MSG = (
+    "STT включён (settings.voice.stt_enabled=True), но не найден движок. "
+    "Установите: pip install faster-whisper sounddevice scipy\n"
+    "(faster-whisper — MIT, локальное распознавание без юридических рисков)."
+)
+
+#: Модель faster-whisper по умолчанию (small — баланс точность/скорость).
+DEFAULT_WHISPER_MODEL = "small"
+
+
+class STTEngine:
+    """Минимальный, но РАБОЧИЙ STT-движок поверх faster-whisper."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._model = None
+        voice_enabled = bool(getattr(getattr(settings, "voice", None), "stt_enabled", False))
+        self._enabled = voice_enabled or bool(getattr(getattr(settings, "stt", None), "enabled", False))
+        if not self._enabled:
+            log.info("STT отключён (settings.voice.stt_enabled=False)")
+        else:
+            # Проверяем доступность бэкенда сразу, чтобы is_available() было
+            # точным (а не падало в рантайме неожиданно).
+            self._backend_ok = self._probe_backend()
+            if not self._backend_ok:
+                log.warning("STT включён, но движок недоступен: %s", STT_NEED_BACKEND_MSG)
+
+    # ------------------------------------------------------------------ #
+    #  Доступность
+    # ------------------------------------------------------------------ #
+
+    def is_available(self) -> bool:
+        """True, если STT включён И движок реально доступен."""
+        return self._enabled and getattr(self, "_backend_ok", False)
+
+    def _probe_backend(self) -> bool:
+        """Пробует лениво импортировать faster-whisper (без загрузки модели)."""
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except Exception as exc:  # pragma: no cover - зависит от окружения
+            log.debug("faster-whisper недоступен: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------ #
+    #  Транскрипция файла
+    # ------------------------------------------------------------------ #
+
+    def transcribe_file(self, audio_path: str) -> str:
+        """Транскрибирует аудиофайл в текст (реально, если движок доступен)."""
+        if not self._enabled:
+            raise NotImplementedError(STT_DISABLED_MSG)
+        if not self.is_available():
+            raise RuntimeError(STT_NEED_BACKEND_MSG)
+
+        try:
+            from faster_whisper import WhisperModel
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(STT_NEED_BACKEND_MSG) from exc
+
+        stt_cfg = getattr(self._settings, "stt", None)
+        voice_cfg = getattr(self._settings, "voice", None)
+        model_size = getattr(stt_cfg, "model", "") or getattr(voice_cfg, "stt_model", DEFAULT_WHISPER_MODEL)
+        if model_size.startswith("faster-whisper-"): model_size = model_size.removeprefix("faster-whisper-")
+        device = getattr(voice_cfg, "stt_device", "cpu") or "cpu"
+        language = (getattr(stt_cfg, "language", "") or getattr(voice_cfg, "language", "ru") or "ru").strip().lower()
+        if language == "auto":
+            language = "ru"
+
+        if self._model is None:
+            log.info("STT: загрузка модели '%s' на %s...", model_size, device)
+            self._model = WhisperModel(model_size, device=device, compute_type="int8")
+        model = self._model
+        segments: List[Tuple[float, float, str]] = []
+        confidences: list[float] = []
+        vad_enabled = str(getattr(stt_cfg, "vad", "webrtc") or "").casefold() not in {"", "none", "off", "false"}
+        transcribe_options = {
+            "language": language,
+            "beam_size": 8,
+            "best_of": 5,
+            "temperature": 0.0,
+            "condition_on_previous_text": False,
+            "vad_filter": vad_enabled,
+        }
+        if vad_enabled:
+            transcribe_options["vad_parameters"] = {
+                "min_silence_duration_ms": 300,
+                "speech_pad_ms": 200,
+            }
+        for seg in model.transcribe(audio_path, **transcribe_options)[0]:
+            segments.append((seg.start, seg.end, seg.text))
+            if getattr(seg, "avg_logprob", None) is not None:
+                import math
+                confidences.append(max(0.0, min(1.0, math.exp(float(seg.avg_logprob)))))
+        text = " ".join(s.strip() for _, _, s in segments if s and s.strip())
+        log.info("STT: распознано %d сегментов, %d символов", len(segments), len(text))
+        self.last_confidence = sum(confidences) / len(confidences) if confidences else 1.0
+        return text.strip()
+
+    def transcribe_with_confidence(self, audio_path: str) -> tuple[str, float]:
+        """Return text plus Whisper's mean segment confidence when available."""
+        text = self.transcribe_file(audio_path)
+        confidence = 1.0
+        # Keep the public legacy method stable; callers that need confidence
+        # can use this optional metadata path.
+        try:
+            confidence = float(getattr(self, "last_confidence", confidence))
+        except (TypeError, ValueError):
+            pass
+        return text, confidence
+
+    # ------------------------------------------------------------------ #
+    #  Потоковое / одноразовое прослушивание с микрофона
+    # ------------------------------------------------------------------ #
+
+    def listen_once(self, timeout: float = 5.0, sample_rate: int = 16000) -> str:
+        """Одноразовое прослушивание с микрофона -> текст.
+
+        Записывает ``timeout`` секунд через sounddevice, сохраняет во временный
+        WAV и прогоняет через :meth:`transcribe_file`.
+        """
+        if not self._enabled:
+            raise NotImplementedError(STT_DISABLED_MSG)
+        if not self.is_available():
+            raise RuntimeError(STT_NEED_BACKEND_MSG)
+
+        try:
+            import sounddevice as sd  # type: ignore
+            import scipy.io.wavfile as wav  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Для listen_once нужны sounddevice и scipy: "
+                "pip install sounddevice scipy"
+            ) from exc
+
+        log.info("STT: слушаю микрофон %.1fс...", timeout)
+        frames = int(timeout * sample_rate)
+        recording = None
+        last_error: Exception | None = None
+        for device in self._input_device_candidates(sd):
+            try:
+                recording = sd.rec(
+                    frames,
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    device=device,
+                )
+                sd.wait()
+                self._active_input_device = device
+                break
+            except Exception as exc:
+                last_error = exc
+                log.debug("STT: вход %r недоступен: %s", device, exc)
+        if recording is None:
+            detail = str(last_error) if last_error else "нет входных устройств"
+            raise RuntimeError(f"Микрофон недоступен: {detail}") from last_error
+
+        # Normalize microphone level without changing speech timing.  The
+        # previous path sent raw int16 capture straight to Whisper; quiet
+        # Windows inputs then lose Russian consonants before decoding.
+        try:
+            import numpy as np  # type: ignore
+            signal = np.asarray(recording, dtype=np.float32)
+            signal -= float(signal.mean())
+            peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+            if peak > 0.0:
+                signal *= min(1.0, 30000.0 / peak)
+            recording = np.clip(signal, -32768.0, 32767.0).astype(np.int16)
+        except Exception as exc:
+            log.debug("STT preprocessing skipped: %s", exc)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav.write(tmp.name, sample_rate, recording)
+            tmp_path = tmp.name
+        try:
+            return self.transcribe_file(tmp_path)
+        finally:
+            import os
+
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    def _input_device_candidates(self, sd) -> list[object]:
+        configured = getattr(getattr(self._settings, "voice", None), "input_device_index", None)
+        candidates: list[object] = []
+        if isinstance(configured, numbers.Integral) and int(configured) >= 0:
+            candidates.append(int(configured))
+        try:
+            default_input = sd.default.device[0]
+            if isinstance(default_input, numbers.Integral) and int(default_input) >= 0:
+                candidates.append(int(default_input))
+        except Exception:
+            pass
+        try:
+            for index, info in enumerate(sd.query_devices()):
+                if int(info.get("max_input_channels", 0)) > 0:
+                    candidates.append(index)
+        except Exception:
+            pass
+        unique: list[object] = []
+        for item in candidates:
+            if item not in unique:
+                unique.append(item)
+        return unique
+
+    def transcribe_with_confidence_from_mic(self, timeout: float = 5.0) -> tuple[str, float]:
+        return self.listen_once(timeout=timeout), float(getattr(self, "last_confidence", 1.0))
+
+    # ------------------------------------------------------------------ #
+    #  Потоковая транскрипция (минимальный hook — делегирует в файл)
+    # ------------------------------------------------------------------ #
+
+    def transcribe_stream(self, audio_stream) -> str:
+        """Транскрибирует аудиопоток.
+
+
+===== core/voice/tts_queue.py =====
+"""Thread-safe FIFO TTS queue with cooperative lifecycle controls."""
+from __future__ import annotations
+
+import collections
+import threading
+import time
+from typing import Optional
+
+from core.utils.logger import get_logger
+from core.voice.output import AssistantOutput
+from core.voice.speech_renderer import RenderedSpeech, SpeechRenderer
+
+__all__ = ["TTSQueue"]
+log = get_logger(__name__)
+
+
+class TTSQueue:
+    def __init__(self, tts_engine, *, renderer: Optional[SpeechRenderer] = None) -> None:
+        self._tts = tts_engine
+        self._renderer = renderer or SpeechRenderer()
+        self._items: collections.deque[RenderedSpeech] = collections.deque()
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._paused = False
+        self._active = False
+        self._condition = threading.Condition(threading.RLock())
+        self._stopped = threading.Event()
+        self._stopped.set()
+
+    def start(self) -> None:
+        with self._condition:
+            if self._running:
+                return
+            self._running = True
+            self._paused = False
+            self._stopped.clear()
+            self._thread = threading.Thread(target=self._worker, daemon=False, name="TTSQueue")
+            self._thread.start()
+
+    def stop(self, wait: bool = True, timeout: float = 5.0) -> None:
+        with self._condition:
+            if not self._running and self._thread is None:
+                return
+            self._running = False
+            self._items.clear()
+            self._condition.notify_all()
+        try:
+            self._tts.stop_speaking()
+        except Exception:
+            pass
+        if wait:
+            self.join(timeout=timeout)
+
+    def join(self, timeout: float | None = None) -> bool:
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+        return bool(thread is None or not thread.is_alive())
+
+    @property
+    def stopped(self) -> threading.Event:
+        return self._stopped
+
+    def add_output(self, output: AssistantOutput) -> bool:
+        rendered = self._renderer.render(output)
+        if rendered is None:
+            return False
+        with self._condition:
+            if not self._running:
+                return False
+            self._items.append(rendered)
+            self._condition.notify()
+        return True
+
+    def add_to_queue(self, text: str) -> bool:
+        if not text or not text.strip():
+            return False
+        return self.add_output(AssistantOutput.natural(text.strip()))
+
+    def clear(self) -> int:
+        with self._condition:
+            count = len(self._items)
+            self._items.clear()
+            self._condition.notify_all()
+            return count
+
+    def interrupt(self) -> None:
+        self.clear()
+        try:
+            self._tts.stop_speaking()
+        except Exception:
+            pass
+
+    def wait_until_done(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while self._items or self._active:
+                if deadline is None:
+                    self._condition.wait()
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._condition.wait(timeout=remaining)
+            return True
+
+    def pause(self) -> None:
+        with self._condition:
+            self._paused = True
+
+    def resume(self) -> None:
+        with self._condition:
+            self._paused = False
+            self._condition.notify_all()
+
+    @property
+    def is_running(self) -> bool:
+        with self._condition:
+            return self._running
+
+    @property
+    def queue_size(self) -> int:
+        with self._condition:
+            return len(self._items)
+
+    def _worker(self) -> None:
+        try:
+            while True:
+                with self._condition:
+                    while self._running and (self._paused or not self._items):
+                        self._condition.wait()
+                    if not self._running and not self._items:
+                        break
+                    if not self._items:
+                        continue
+                    item = self._items.popleft()
+                    self._active = True
+                try:
+                    speak_rendered = getattr(self._tts, "speak_rendered", None)
+                    if callable(speak_rendered):
+                        speak_rendered(item)
+                    else:
+                        self._tts.speak(item.text, blocking=True)
+                except Exception as exc:
+                    log.error("TTSQueue worker ошибка: %s", exc)
+                finally:
+                    with self._condition:
+                        self._active = False
+                        self._condition.notify_all()
+        finally:
+            with self._condition:
+                self._thread = None
+                self._running = False
+                self._active = False
+                self._condition.notify_all()
+            self._stopped.set()
+
+===== core/voice/speech_renderer.py =====
+"""Natural-language speech rendering after the typed response boundary."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from core.voice.output import AssistantOutput
+from core.voice.tts_sanitizer import sanitize_for_tts
+
+
+@dataclass(frozen=True)
+class VoiceMode:
+    rate: float
+    volume: float
+
+
+@dataclass(frozen=True)
+class RenderedSpeech:
+    text: str
+    mode: str = "normal"
+    rate: float = 1.0
+    volume: float = 1.0
+
+
+DEFAULT_MODES: dict[str, VoiceMode] = {
+    "normal": VoiceMode(1.00, 1.00),
+    "focused": VoiceMode(1.03, 1.00),
+    "quiet": VoiceMode(0.96, 0.72),
+    "urgent": VoiceMode(1.04, 1.00),
+    "amused": VoiceMode(1.02, 0.95),
+    "background": VoiceMode(0.98, 0.85),
+}
+
+
+class SpeechRenderer:
+    def __init__(self, voice_settings: Any = None) -> None:
+        self._modes = dict(DEFAULT_MODES)
+        configured = getattr(voice_settings, "modes", None)
+        if configured:
+            items = configured.items() if hasattr(configured, "items") else []
+            for name, raw in items:
+                rate = raw.get("rate", 1.0) if isinstance(raw, dict) else getattr(raw, "rate", 1.0)
+                volume = raw.get("volume", 1.0) if isinstance(raw, dict) else getattr(raw, "volume", 1.0)
+                self._modes[str(name)] = VoiceMode(
+                    max(0.9, min(1.1, float(rate))),
+                    max(0.05, min(1.0, float(volume))),
+                )
+
+    def render(self, output: AssistantOutput) -> Optional[RenderedSpeech]:
+        if not isinstance(output, AssistantOutput):
+            raise TypeError("SpeechRenderer accepts AssistantOutput only")
+        if not output.speak or not output.speech_text:
+            return None
+        text = sanitize_for_tts(output.speech_text, fallback="")
+        if not text:
+            return None
+        mode_name = output.speech_mode if output.speech_mode in self._modes else "normal"
+        mode = self._modes[mode_name]
+        return RenderedSpeech(text, mode_name, mode.rate, mode.volume)
+
+
+__all__ = ["DEFAULT_MODES", "RenderedSpeech", "SpeechRenderer", "VoiceMode"]
+
+===== core/personality/engine.py =====
+"""Structured identity, response style selection, and restrained wording."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from core.personality.communication import CommunicationAdapter
+from core.personality.humor import HumorPolicy
+from core.personality.models import IdentityProfile, PersonalityProfile, StyleProfile, UserProfile
+from core.utils.paths import PROJECT_ROOT
+
+
+def _load(path: Path | str | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, TypeError, ValueError):
+        return {}
+
+
+class PersonalityEngine:
+    def __init__(self, *, identity_path: Path | str | None = None,
+                 personality_path: Path | str | None = None) -> None:
+        identity_path = identity_path or (PROJECT_ROOT / "persona" / "identity.json")
+        personality_path = personality_path or (PROJECT_ROOT / "persona" / "personality.json")
+        self.identity = IdentityProfile.from_mapping(_load(identity_path))
+        self.profile = PersonalityProfile.from_mapping(_load(personality_path))
+        self.humor = HumorPolicy(self.profile.humor)
+        self.communication = CommunicationAdapter(self.profile, self.humor)
+
+    def style_for(self, *, user_context: Any = None, urgency: str = "normal",
+                  task_type: str = "conversation",
+                  user_preference: UserProfile | Mapping[str, Any] | None = None,
+                  risk: str = "low", is_error: bool = False) -> StyleProfile:
+        return self.communication.adapt(
+            user_context, urgency, task_type, user_preference, risk=risk, is_error=is_error,
+        )
+
+    @staticmethod
+    def infer_task_type(text: str, *, mode: str = "") -> str:
+        value = " ".join((text or "").casefold().replace("ё", "е").split())
+        if mode == "conversation":
+            if re.search(r"\b(объясни|научи|как работает|почему)\b", value):
+                return "learning"
+            return "conversation"
+        if re.search(r"\b(отчет|сводк|результат|итог)\w*", value):
+            return "report"
+        if re.search(r"\b(объясни|научи|инструкц|по шагам)\w*", value):
+            return "learning"
+        return "work"
+
+    @staticmethod
+    def contextual_greeting(return_context: Any) -> str | None:
+        confidence = float(getattr(return_context, "confidence", 0.0) or 0.0)
+        evidence = tuple(getattr(return_context, "evidence", ()) or ())
+        message = " ".join(str(getattr(return_context, "message", "") or "").split())
+        if confidence < 0.7 or not evidence or not message:
+            return None
+        sprint11 = re.match(r"(?i)^продолжим\s+(.+?)\?\s*остановились\s+на\s+.+", message)
+        if sprint11:
+            subject = sprint11.group(1).strip(" .?!")
+            return f"Сэр, продолжим {subject}?"
+        task = re.sub(r"(?i)^вы\s+остановились\s+на\s+", "", message).strip(" .?!")
+        words = task.split()
+        if words and re.search(r"(?i)(ке|те)$", words[0]):
+            words[0] = words[0][:-1] + "у"
+        task = " ".join(words)
+        return f"Сэр, продолжим: {task}?" if task else "Сэр, продолжим прошлую задачу?"
+
+    def prompt_fragment(self, style: StyleProfile,
+                        memories: Iterable[str] = ()) -> str:
+        relevant = [" ".join(str(item).split())[:180] for item in memories if str(item).strip()][:4]
+        parts = [
+            f"Identity: {self.identity.name}; role: {self.identity.role}; mission: {self.identity.mission}.",
+            ("Стиль ответа: "
+             f"tone={style.tone}; verbosity={style.verbosity}; "
+             f"max_sentences={style.max_sentences}; structure={'yes' if style.structured else 'no'}; "
+             f"humor={style.humor_level:.2f}; address={style.address}."),
+            "Сначала точность и результат; сохраняй единый характер без постоянного театра.",
+        ]
+        if relevant:
+            parts.append("Релевантные предпочтения: " + " | ".join(relevant))
+        return "\n".join(parts)[:1199]
+
+    def naturalize(self, text: str, *, verified: bool, task_type: str = "work") -> str:
+        value = (text or "").strip()
+        generic = value.casefold().rstrip(".! ") in {
+            "task completed successfully", "completed successfully", "выполнено", "задача выполнена",
+        }
+        if not generic:
+            return value
+        if verified:
+            return f"Готово, {self.profile.address}. Проверил результат — всё применилось."
+        return "Результат пока не подтверждён проверкой."
+
+    @staticmethod
+    def adapt_response(text: str, style: StyleProfile) -> str:
+        """Applies a hard brevity bound only to plain natural conversation."""
+        value = (text or "").strip()
+        list_lines = [line for line in value.splitlines()
+                      if line.lstrip().startswith(("-", "*", "1."))]
+        if style.verbosity != "short" or style.structured or "```" in value or len(list_lines) > 1:
+            return value
+        sentences = [part.strip() for part in re.findall(
+            r"[^.!?]+(?:[.!?]+(?=\s|$)|$)", value,
+        ) if part.strip()]
+        if len(sentences) <= style.max_sentences:
+            return value
+        return " ".join(sentences[:style.max_sentences])
+
+===== persona/system_prompt.py =====
+"""Сборка системного промпта для LLM.
+
+``build_system_prompt`` комбинирует:
+1. Базовую персону (``persona/persona.md``)
+2. Профиль пользователя (``get_profile_context``)
+3. Найденный контекст памяти (``RetrievedContext``)
+в единый system prompt для передачи в LLM.
+
+Sprint 4 добавляет ``build_agent_system_prompt`` — сборку для агентного
+WS-пути (``Agent._answer_conversation``): персона по тирам, факты
+профиля, тон разговора, время суток, degraded-режим TIER 4.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+from pathlib import Path
+from typing import Optional
+
+from config.settings import Settings
+from core.memory.profile import get_profile_context
+from core.state import RetrievedContext
+from core.utils.logger import get_logger
+from core.utils.paths import PROJECT_ROOT
+
+__all__ = [
+    "build_system_prompt",
+    "load_persona_text",
+    "persona_core",
+    "build_agent_system_prompt",
+    "time_of_day_hint",
+]
+
+log = get_logger(__name__)
+
+# Путь к файлу персоны
+PERSONA_PATH = PROJECT_ROOT / "persona" / "persona.md"
+
+# Кэш персоны
+_PERSONA_CACHE: Optional[str] = None
+
+#: Компактное ядро персоны для FAST-тира (TIER 1 бюджет — 2000 токенов,
+#: полный persona.md туда не влезает вместе с историей).
+_PERSONA_CORE = (
+    "Ты — АТЛАС, единый непрерывный цифровой разум пользователя: точный, "
+    "надёжный и профессионально-дружелюбный. В обычном разговоре звучишь "
+    "естественно и знакомо, как давний собеседник из Discord, но без навязчивого "
+    "театра. Длина, подробность, структура, обращение и уровень юмора задаются "
+    "структурированным профилем стиля ниже; следуй ему. Сначала результат и "
+    "точность; не выдумывай факты; при ошибке сохраняй спокойствие; при риске "
+    "исключай юмор. Прежнее имя «Джарвис» распознавай как совместимый alias, "
+    "но представляйся как АТЛАС."
+)
+
+#: Persona-строка для планировщика (TIER 2) — тон без размытия фокуса на JSON.
+_PERSONA_PLANNER = (
+    "Ты — АТЛАС (legacy alias: Джарвис): единый когнитивный координатор. Сейчас твоя задача — "
+    "точное решение с инструментом: строго валидный JSON, без лишних слов."
+)
+
+#: Persona-строка для глубоких тиров (TIER 3).
+_PERSONA_DEEP = (
+    "Ты — АТЛАС (legacy alias: Джарвис). Задача серьёзная (код/анализ): собранный режим, максимум "
+    "структуры и точности; юмор — по остаточному принципу."
+)
+
+#: TIER 4 (офлайн, ограниченный режим).
+_PERSONA_OFFLINE = (
+    "Ты — АТЛАС (legacy alias: Джарвис), работаешь в ограниченном офлайн-режиме. Скажи об этом "
+    "коротко и всё равно помоги, чем можешь."
+)
+
+
+def load_persona_text() -> str:
+    """Загружает текст персоны из markdown-файла (с кэшированием)."""
+    global _PERSONA_CACHE
+    if _PERSONA_CACHE is not None:
+        return _PERSONA_CACHE
+
+    try:
+        text = PERSONA_PATH.read_text(encoding="utf-8")
+        _PERSONA_CACHE = text
+        log.debug("Персона загружена из %s (%d символов)", PERSONA_PATH, len(text))
+        return text
+    except Exception as exc:
+        log.error("Не удалось загрузить персону из %s: %s", PERSONA_PATH, exc)
+        # Фоллбэк — минимальная персона
+        fallback = _PERSONA_CORE
+        _PERSONA_CACHE = fallback
+        return fallback
+
+
+def persona_core() -> str:
+    """Компактное ядро персоны (для быстрых тиров с малым бюджетом)."""
+    return _PERSONA_CORE
+
+
+def time_of_day_hint(now: Optional[_dt.datetime] = None) -> str:
+    """Подсказка времени суток для живого приветствия («Доброе утро» и пр.)."""
+    hour = (now or _dt.datetime.now()).hour
+    if 5 <= hour < 12:
+        return "Сейчас утро."
+    if 12 <= hour < 18:
+        return "Сейчас день."
+    if 18 <= hour < 23:
+        return "Сейчас вечер."
+    return "Сейчас ночь."
+
+
+def build_agent_system_prompt(
+    settings: Settings,
+    tier: str = "fast",
+    profile_ctx: str = "",
+    memory_ctx: str = "",
+    tone: str = "default",
+    offline: bool = False,
+    personality_context: str = "",
+) -> str:
+    """Собирает system prompt для агентного пути (Sprint 4, STEP 3).
+
+    Персона по тирам (STEP 3.2):
+        fast     — максимум персоны (компактное ядро + факты + тон);
+        plan     — persona-строка + фокус на точность JSON;
+        deep     — persona-строка + собранность;
+        offline  — persona + честная пометка об ограниченном режиме.
+
+    Args:
+        settings: конфигурация (persona.name/address/language).
+        tier: 'fast' | 'plan' | 'deep' | 'offline'.
+        profile_ctx: выжимка профиля пользователя (``get_profile_context``).
+        memory_ctx: контекст из графа-памяти (agento ``_retrieve_context``).
+        tone: 'casual' | 'serious' | 'default' (``core.memory.facts.detect_tone``).
+        offline: TIER 4 — офлайн-режим.
+    """
+    persona_cfg = getattr(settings, "persona", None)
+    name = getattr(persona_cfg, "name", "АТЛАС")
+    language = getattr(persona_cfg, "language", "ru")
+
+    if tier == "plan":
+        return f"{_PERSONA_PLANNER}\nЯзык ответа: {language}."
+    if tier == "deep":
+        return f"{_PERSONA_DEEP}\nЯзык ответа: {language}."
+
+    parts: list[str] = [_PERSONA_CORE]
+    if offline:
+        parts.append(_PERSONA_OFFLINE)
+
+    parts.append(f"Язык ответа: {language}.")
+
+    if profile_ctx:
+        parts.append(f"Что ты знаешь о пользователе: {profile_ctx}")
+    else:
+        parts.append(
+            "Имени пользователя ты ещё не знаешь — если уместно, можешь "
+            "один раз коротко спросить, как его зовут."
+        )
+
+    if memory_ctx:
+        parts.append(f"Контекст из памяти: {memory_ctx}")
+
+    if tone == "casual":
+        parts.append("Пользователь настроен неформально — подыграй, можно подколоть.")
+    elif tone == "serious":
+        parts.append("Пользователь настроен серьёзно — по делу, юмор минимизируй.")
+
+    if not offline:
+        parts.append(time_of_day_hint())
+
+    if personality_context:
+        parts.append(personality_context[:1200])
+
+    return "\n".join(parts)
+
+
+def build_system_prompt(
+    settings: Settings,
+    retrieved_context: Optional[RetrievedContext] = None,
+) -> str:
+    """Собирает полный системный промпт.
+
+    Args:
+        settings: конфигурация (для имени/обращения).
+        retrieved_context: контекст из памяти (профиль, долгая память, документы, граф).
+
+    Returns:
+        Готовый system prompt строка.
+    """
+    parts: list[str] = []
+
+    # 1. Базовая персона
+    persona_text = load_persona_text()
+    parts.append(persona_text.strip())
+
+    # 2. Имя и обращение из настроек
+    persona_name = getattr(getattr(settings, "persona", None), "name", "АТЛАС")
+    address = getattr(getattr(settings, "persona", None), "address", "сёр")
+    language = getattr(getattr(settings, "persona", None), "language", "ru")
+
+    parts.append(f"\n---\nИмя: {persona_name}. Обращение: «{address}». Язык ответа: {language}.")
+
+    # 3. Профиль пользователя
+    if retrieved_context and retrieved_context.get("profile"):
+        profile_ctx = retrieved_context["profile"].strip()
+        if profile_ctx:
+            parts.append(f"\n---\nПрофиль пользователя:\n{profile_ctx}")
+
+    # 4. Долгая память (релевантные факты)
+    if retrieved_context and retrieved_context.get("long_term"):
+        lt = retrieved_context["long_term"]
+        if lt:
+            parts.append("\n---\nРелевантные факты из долгой памяти:")
+            for i, item in enumerate(lt, 1):
+                parts.append(f"  {i}. {item}")
+
+    # 5. Документы (RAG)
+    if retrieved_context and retrieved_context.get("documents"):
+        docs = retrieved_context["documents"]
+        if docs:
+            parts.append("\n---\nРелевантные фрагменты из документов:")
+            for i, doc in enumerate(docs, 1):
+                preview = doc[:300] + ("…" if len(doc) > 300 else "")
+                parts.append(f"  [{i}] {preview}")
+
+    # 6. Граф знаний
+    if retrieved_context and retrieved_context.get("graph"):
+        graph = retrieved_context["graph"]
+        if graph:
+            parts.append("\n---\nСвязи из графа знаний:")
+            for node in graph:
+                parts.append(f"  • {node}")
+
+    # 7. Направляющие для ответа
+    parts.append(
+        "\n---\n"
+        "ПРАВИЛА ОТВЕТА:\n"
+        "1. Обращайся «сёр».\n"
+        "2. Отвечай кратко (1-3 предложения или список). Никаких эссе.\n"
+        "3. Используй контекст выше — не выдумывай факты.\n"
+        "4. Если не знаешь — скажи «не знаю, сёр» или «проверю».\n"
+        "5. Предупреждай перед опасными действиями.\n"
+        "6. Можешь отказать, если запрос небезопасен или абсурден.\n"
+        "7. Юмор сухой, по месту. Не спамь."
+    )
+
+    return "\n".join(parts)
+
+===== core/actions/computer_use.py =====
+"""Production adapters for the existing real Windows CUA backend."""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List
+
+from core.actions.base import ActionResult, Tool, ToolContext
+from core.actions.registry import DEFAULT_REGISTRY
+from core.cua import Point, build_backend
+from core.platform.windows import NativeWindowsProvider
+
+__all__ = [
+    "DryRunInputController",
+    "ComputerMouseTool",
+    "ComputerKeyboardTool",
+    "ComputerScreenshotTool",
+]
+
+
+@dataclass
+class DryRunInputController:
+    """Compatibility recorder for callers that explicitly request a dry run."""
+
+    actions: List[Dict[str, Any]] = field(default_factory=list)
+
+    def record(self, kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        entry = {"kind": kind, "args": dict(args or {}), "ts": time.time(), "mode": "dry_run"}
+        self.actions.append(entry)
+        return entry
+
+    def clear(self) -> None:
+        self.actions.clear()
+
+
+_CONTROLLER = DryRunInputController()
+_BACKEND = build_backend(real_input=True)
+_WINDOWS = NativeWindowsProvider()
+
+
+def _active_window() -> Dict[str, Any]:
+    try:
+        return dict(_WINDOWS.window_active())
+    except Exception as exc:
+        return {"title": "", "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _screen_fingerprint() -> str:
+    try:
+        import mss
+        with mss.mss() as capture:
+            frame = capture.grab(capture.monitors[0])
+            return hashlib.sha256(bytes(frame.rgb)).hexdigest()
+    except Exception:
+        return ""
+
+
+def _observed_action(tool: str, args: Dict[str, Any], execute) -> ActionResult:
+    before_window = _active_window()
+    before_screen = _screen_fingerprint()
+    try:
+        backend_result = execute()
+    except Exception as exc:
+        return ActionResult(tool, args, False, error=f"{type(exc).__name__}: {exc}")
+    if isinstance(backend_result, dict) and not backend_result.get("ok", True):
+        return ActionResult(tool, args, False, error=str(backend_result.get("error") or backend_result))
+    time.sleep(0.35)
+    after_window = _active_window()
+    after_screen = _screen_fingerprint()
+    changed = bool(before_screen and after_screen and before_screen != after_screen)
+    focused = before_window.get("handle") != after_window.get("handle")
+    output = {
+        "physical": bool(_BACKEND.is_real),
+        "backend_result": backend_result,
+        "active_before": before_window,
+        "active_after": after_window,
+        "screen_changed": changed,
+        "observed": bool(focused or changed),
+    }
+    return ActionResult(tool, args, bool(_BACKEND.is_real), output=output,
+                        error=None if _BACKEND.is_real else "real CUA backend is inactive")
+
+
+class ComputerMouseTool(Tool):
+    @property
+    def name(self) -> str:
+        return "computer_mouse"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Physically controls the Windows mouse through the existing real CUA backend. "
+            "Coordinates are normalized from 0 to 1000. Use only after observing the screen."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["move", "click", "double_click", "right_click"]},
+                "x": {"type": "number", "minimum": 0, "maximum": 1000},
+                "y": {"type": "number", "minimum": 0, "maximum": 1000},
+            },
+            "required": ["action", "x", "y"],
+            "additionalProperties": False,
+        }
+
+    def run(self, args: Dict[str, Any], context: ToolContext) -> ActionResult:
+        point = Point(float(args["x"]), float(args["y"]))
+        return _observed_action(self.name, args, lambda: _BACKEND.act(str(args["action"]), point=point))
+
+
+class ComputerKeyboardTool(Tool):
+    @property
+    def name(self) -> str:
+        return "computer_keyboard"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Physically types, presses keys, sends hotkeys, or focuses a real Windows window. "
+            "For focus_window provide window_title; for hotkey provide keys such as alt+tab."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["type", "press", "hotkey", "focus_window"]},
+                "text": {"type": "string"},
+                "key": {"type": "string"},
+                "keys": {"type": "string"},
+                "window_title": {"type": "string"},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+
+    def run(self, args: Dict[str, Any], context: ToolContext) -> ActionResult:
+        action = str(args["action"])
+        if action == "focus_window":
+            title = str(args.get("window_title") or "").strip()
+            if not title:
+                return ActionResult(self.name, args, False, error="focus_window requires window_title")
+            return _observed_action(self.name, args, lambda: _WINDOWS.window_focus(title=title))
+        if action == "type":
+            return _observed_action(self.name, args, lambda: _BACKEND.act("type", text=str(args.get("text") or "")))
+        if action == "press":
+            key = str(args.get("key") or "").strip()
+            if not key:
+                return ActionResult(self.name, args, False, error="press requires key")
+            return _observed_action(self.name, args, lambda: _BACKEND.act("press", text=key))
+        keys = str(args.get("keys") or "").strip()
+        if not keys:
+            return ActionResult(self.name, args, False, error="hotkey requires keys")
+        return _observed_action(self.name, args, lambda: _BACKEND.act("hotkey", text=keys))
+
+
+class ComputerScreenshotTool(Tool):
+    @property
+    def name(self) -> str:
+        return "computer_screenshot"
+
+    @property
+    def description(self) -> str:
+        return "Captures the physical Windows desktop to a PNG inside documents_dir and reports the active window."
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string", "default": "computer_captures/screen.png"}},
+            "additionalProperties": False,
+        }
+
+    def run(self, args: Dict[str, Any], context: ToolContext) -> ActionResult:
+        root = Path(context.settings.documents_dir).expanduser().resolve()
+        requested = Path(str(args.get("path") or "computer_captures/screen.png"))
+        target = (root / requested).resolve()
+        if target != root and root not in target.parents:
+            return ActionResult(self.name, args, False, error="screenshot path escapes documents_dir")
+        try:
+            import mss
+            import mss.tools
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with mss.mss() as capture:
+                frame = capture.grab(capture.monitors[0])
+                mss.tools.to_png(frame.rgb, frame.size, output=str(target))
+            ok = target.is_file() and target.stat().st_size > 100
+            return ActionResult(
+                self.name, args, ok,
+                output={"path": str(target), "bytes": target.stat().st_size if ok else 0,
+                        "active_window": _active_window(), "physical": True},
+                error=None if ok else "physical screenshot was not created",
+            )
+        except Exception as exc:
+            return ActionResult(self.name, args, False, error=f"{type(exc).__name__}: {exc}")
+
+
+DEFAULT_REGISTRY.register(ComputerMouseTool())
+DEFAULT_REGISTRY.register(ComputerKeyboardTool())
+DEFAULT_REGISTRY.register(ComputerScreenshotTool())
+
+===== core/actions/browser_bridge.py =====
+"""ToolRegistry adapter for the policy-aware BrowserBridge."""
+from __future__ import annotations
+
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, Mapping
+
+from core.actions.base import ActionResult, Tool, ToolContext
+from core.actions.registry import DEFAULT_REGISTRY
+from core.platform.browser_bridge import (
+    BrowserActionResult,
+    BrowserBridge,
+    BrowserBridgeError,
+    ConfirmationGrant,
+)
+
+__all__ = ["BrowserBridgeTool"]
+
+
+class BrowserBridgeTool(Tool):
+    """Operator-facing browser tool with verified mutation semantics."""
+
+    def __init__(self, bridge: BrowserBridge | None = None) -> None:
+        self._bridge = bridge
+        # Playwright's sync API binds its greenlet to the creating thread.
+        # Tool calls arrive from arbitrary executor workers, so every browser
+        # operation must cross one stable worker for the lifetime of the tool.
+        self._worker = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="jarvis-browser-bridge",
+        )
+
+    def _get_bridge(self) -> BrowserBridge:
+        if self._bridge is None:
+            # Production HANDS uses a visible browser.  The existing
+            # BrowserBridge still owns DOM grounding, policy and verification.
+            from core.platform.browser import BrowserAutomationProvider
+            self._bridge = BrowserBridge(provider=BrowserAutomationProvider(headless=False))
+        return self._bridge
+
+    @property
+    def name(self) -> str:
+        return "browser_bridge"
+
+    @property
+    def description(self) -> str:
+        return (
+            "DOM-first BrowserBridge: semantic find, stale-DOM protection, policy-gated "
+            "click/type/download and execute-observe-verify results. confirm=true alone "
+            "never authorizes a risky action."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "open", "navigate", "inspect_dom", "find", "click", "type", "press",
+                        "read", "wait", "extract", "download", "observe", "close",
+                    ],
+                },
+                "url": {"type": "string"},
+                "selector": {"type": ["string", "object", "integer"]},
+                "index": {"type": "integer"},
+                "text": {"type": "string"},
+                "key": {"type": "string"},
+                "timeout": {"type": "number", "minimum": 0},
+                "directory": {"type": "string"},
+                "confirm": {"type": "boolean"},
+                "expected_state": {"type": "object"},
+                "max_nodes": {"type": "integer", "minimum": 1},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+
+    @staticmethod
+    def _target(args: Mapping[str, Any]) -> Any:
+        if "selector" in args:
+            return args["selector"]
+        if "index" in args:
+            return int(args["index"])
+        raise ValueError("browser mutation requires selector or index")
+
+    @staticmethod
+    def _grant(context: ToolContext) -> ConfirmationGrant | None:
+        value = context.extra.get("confirmation_grant") if isinstance(context.extra, dict) else None
+        if value is None:
+            return None
+        if isinstance(value, ConfirmationGrant):
+            return value
+        if isinstance(value, Mapping):
+            return ConfirmationGrant.from_mapping(value)
+        return None
+
+    @staticmethod
+    def _approved_grant(
+        bridge: BrowserBridge,
+        action: str,
+        target: Any,
+        context: ToolContext,
+    ) -> tuple[Any, ConfirmationGrant | None, bool]:
+        """Bind Agent confirmation to the exact live DOM target.
+
+        A boolean approval never crosses the BrowserBridge policy boundary by
+        itself.  The target is resolved against the current DOM and converted
+        into the same selector fingerprint that BrowserPolicy validates.
+        """
+        grant = BrowserBridgeTool._grant(context)
+        if grant is not None:
+            return target, grant, False
+        if not bool(context.extra.get("confirmation_approved")):
+            return target, None, False
+        resolved = bridge.find(target)
+        if not resolved.found or resolved.selector is None or bridge.session is None:
+            return target, None, False
+        return resolved, ConfirmationGrant(
+            grant_id=uuid.uuid4().hex,
+            action=action,
+            session_id=bridge.session.session_id,
+            selector_fingerprint=resolved.fingerprint_for(bridge.session.session_id),
+            expires_at=time.time() + 30.0,
+        ), True
+
+    @staticmethod
+    def _result(args: Dict[str, Any], result: BrowserActionResult) -> ActionResult:
+        return ActionResult(
+            tool="browser_bridge",
+            args=args,
+            ok=result.success,
+            output=result.to_dict(),
+            error=result.error,
+        )
+
+    @staticmethod
+    def _download_directory(context: ToolContext, value: Any) -> Path:
+        settings = getattr(context, "settings", None)
+        documents_dir = getattr(settings, "documents_dir", None)
+        if documents_dir is None:
+            raise ValueError("download directory is unavailable")
+        root = Path(documents_dir).expanduser().resolve() / "downloads"
+        requested = Path(str(value)).expanduser()
+        target = (root / requested if not requested.is_absolute() else requested).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        if target != root and root not in target.parents:
+            raise ValueError("download directory must stay inside documents_dir/downloads")
+        return target
+
+    def run(self, args: Dict[str, Any], context: ToolContext) -> ActionResult:
+        return self._worker.submit(self._run_on_browser_thread, args, context).result()
+
+    def _run_on_browser_thread(
+        self, args: Dict[str, Any], context: ToolContext,
+    ) -> ActionResult:
+        bridge = context.extra.get("browser_bridge") if isinstance(context.extra, dict) else None
+        if not isinstance(bridge, BrowserBridge):
+            bridge = self._get_bridge()
+        action = str(args.get("action", "")).casefold()
+        try:
+            if action == "open":
+                if not args.get("url"):
+                    return ActionResult(self.name, args, False, error="open requires url")
+                output = bridge.open(str(args["url"]))
+                return ActionResult(self.name, args, True, output=output)
+            if action == "navigate":
+                output = bridge.navigate(str(args["url"]))
+                return ActionResult(self.name, args, True, output=output)
+            if action == "inspect_dom":
+                output = {"ok": True, "nodes": bridge.inspect_dom(max_nodes=args.get("max_nodes"))}
+                return ActionResult(self.name, args, True, output=output)
+            if action == "observe":
+                return ActionResult(self.name, args, True, output=bridge.observe())
+            if action == "find":
+                result = bridge.find(self._target(args))
+                session_id = bridge.session.session_id if bridge.session else ""
+                return ActionResult(self.name, args, result.found, output=result.to_dict(session_id=session_id))
+            if action == "click":
+                target, grant, fresh_resolution = self._approved_grant(
+                    bridge, "click", self._target(args), context,
+                )
+                result = bridge.click(
+                    target,
+                    confirm=bool(args.get("confirm", False)),
+                    confirmation_grant=grant,
+                    expected_state=args.get("expected_state"),
+                    fresh_resolution=fresh_resolution,
+                )
+                return self._result(args, result)
+            if action == "type":
+                if "text" not in args:
+                    return ActionResult(self.name, args, False, error="type requires text")
+                result = bridge.type(
+                    self._target(args),
+                    str(args["text"]),
+                    confirmation_grant=self._grant(context),
+                    expected_state=args.get("expected_state"),
+                )
+                return self._result(args, result)
+            if action == "press":
+                if "key" not in args:
+                    return ActionResult(self.name, args, False, error="press requires key")
+                target_value = (
+                    self._target(args)
+                    if "selector" in args or "index" in args
+                    else {"css": ":focus"}
+                )
+                target, grant, _ = self._approved_grant(
+                    bridge, "press", target_value, context,
+                )
+                result = bridge.press(
+                    target,
+                    str(args["key"]),
+                    confirmation_grant=grant,
+                    expected_state=args.get("expected_state"),
+                )
+                return self._result(args, result)
+            if action == "read":
+                return ActionResult(self.name, args, True, output=bridge.read())
+            if action == "wait":
+                target = args.get("selector", args.get("index", args.get("timeout", 0)))
+                return ActionResult(self.name, args, True, output=bridge.wait(target, timeout=float(args.get("timeout", 10))))
+            if action == "extract":
+                return ActionResult(self.name, args, True, output=bridge.extract(args.get("selector")))
+            if action == "download":
+                if "directory" not in args:
+                    return ActionResult(self.name, args, False, error="download requires directory")
+                target, grant, fresh_resolution = self._approved_grant(
+                    bridge, "download", self._target(args), context,
+                )
+                result = bridge.download(
+                    target,
+                    directory=self._download_directory(context, args["directory"]),
+                    confirm=bool(args.get("confirm", False)),
+                    confirmation_grant=grant,
+                    fresh_resolution=fresh_resolution,
+                )
+                return self._result(args, result)
+            if action == "close":
+                return ActionResult(self.name, args, True, output=bridge.close())
+            return ActionResult(self.name, args, False, error=f"unknown browser action: {action}")
+        except (BrowserBridgeError, ValueError, TypeError) as exc:
+            return ActionResult(self.name, args, False, error=str(exc))
+        except Exception as exc:  # boundary converts provider failures to a result
+            return ActionResult(self.name, args, False, error=f"{type(exc).__name__}: {exc}")
+
+
+DEFAULT_REGISTRY.register(BrowserBridgeTool())
+
+===== core/memory/document_rag.py =====
+"""RAG по пользовательским файлам (PDF/текст) на базе ChromaDB.
+
+Сканирует ``settings.paths.documents_dir``, режет текст на чанки и
+индексирует в отдельную коллекцию ``documents`` (эмбеддинги — общий
+проектный :class:`Embedder`, как и у долгой памяти).
+
+Обработка ошибок: битый PDF, неподдерживаемый формат или пустой файл —
+логируются и пропускаются, не прерывая индексацию остальных файлов.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+from typing import List, Optional, Set
+
+from config.settings import Settings
+from core.memory.embedder import Embedder
+from core.utils.logger import get_logger
+
+__all__ = ["DocumentRAG", "read_pdf", "read_text_file", "read_document", "chunk_text", "DOCUMENTS_COLLECTION"]
+
+log = get_logger(__name__)
+
+#: Поддерживаемые расширения для индексации.
+_SUPPORTED_EXTENSIONS = (".txt", ".md", ".pdf", ".text", ".docx", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".webp")
+
+#: Имя коллекции ChromaDB для документов.
+DOCUMENTS_COLLECTION = "documents"
+
+
+def read_pdf(path: Path) -> str:
+    """Извлекает текст из PDF через pypdf.
+
+    Raises:
+        RuntimeError: если файл не читается как PDF или pypdf недоступен.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("pypdf не установлен — чтение PDF недоступно") from exc
+
+    try:
+        reader = PdfReader(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось открыть PDF {path}: {exc}") from exc
+
+    pages: List[str] = []
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception as exc:
+            log.debug("Пропущена страница в %s: %s", path, exc)
+            text = ""
+        if text.strip():
+            pages.append(text)
+    return "\n\n".join(pages)
+
+
+def read_text_file(path: Path) -> str:
+    """Читает текстовый файл (.txt/.md/.text). Декодирует UTF-8, fallback на cp1251."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="cp1251", errors="replace")
+    except OSError as exc:
+        raise RuntimeError(f"Не удалось прочитать файл {path}: {exc}") from exc
+
+
+def read_document(path: Path) -> str:
+    """Extract text from local text, office and image formats."""
+    suffix = path.suffix.casefold()
+    if suffix in {".txt", ".md", ".text"}:
+        return read_text_file(path)
+    if suffix == ".pdf":
+        return read_pdf(path)
+    if suffix == ".docx":
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise RuntimeError("python-docx не установлен") from exc
+        return "\n".join(p.text for p in Document(str(path)).paragraphs if p.text.strip())
+    if suffix == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise RuntimeError("openpyxl не установлен") from exc
+        book = load_workbook(str(path), read_only=True, data_only=True)
+        rows: list[str] = []
+        for sheet in book.worksheets:
+            rows.append(f"[sheet: {sheet.title}]")
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(item) for item in row if item is not None]
+                if values:
+                    rows.append(" | ".join(values))
+        return "\n".join(rows)
+    if suffix == ".pptx":
+        try:
+            from pptx import Presentation
+        except ImportError as exc:
+            raise RuntimeError("python-pptx не установлен") from exc
+        slides: list[str] = []
+        for index, slide in enumerate(Presentation(str(path)).slides, start=1):
+            texts = [shape.text for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+            if texts:
+                slides.append(f"[slide: {index}]\n" + "\n".join(texts))
+        return "\n\n".join(slides)
+    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError("pytesseract/Pillow не установлены") from exc
+        return str(pytesseract.image_to_string(Image.open(path), lang="rus+eng") or "")
+    raise RuntimeError(f"Формат не поддерживается: {path.suffix}")
+
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+    """Режет текст на перекрывающиеся чанки по словам.
+
+    Args:
+        text: исходный текст.
+        chunk_size: целевой размер чанка в символах.
+        overlap: перекрытие между соседними чанками (символов).
+
+    Returns:
+        Список непустых чанков. Пустой при пустом входе.
+    """
+    if not text or not text.strip():
+        return []
+    if chunk_size <= 0:
+        chunk_size = 500
+    if overlap < 0:
+        overlap = 0
+    if overlap >= chunk_size:
+        overlap = chunk_size // 4
+
+    words = text.split()
+    if not words:
+        return []
+
+    chunks: List[str] = []
+    current = ""
+    for word in words:
+        if current and len(current) + len(word) + 1 > chunk_size:
+            chunks.append(current.strip())
+            # Начинаем новый чанк с перекрытием из конца предыдущего.
+            overlap_text = current[-overlap:] if overlap else ""
+            current = (overlap_text + " " + word).strip()
+        else:
+            current = (current + " " + word).strip() if current else word
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
+
+
+class DocumentRAG:
+    """Индексатор и поиск по документам пользователя."""
+
+    def __init__(self, settings: Settings, embedder: Embedder) -> None:
+        """
+        Args:
+            settings: конфигурация (берётся ``documents_dir``).
+            embedder: общий эмбеддер проекта.
+        """
+        self._settings = settings
+        self._embedder = embedder
+        self._client = None
+        self._collection = None
+        self._initialized = False
+        # Запоминаем уже проиндексированные файлы, чтобы index_all не дублировал.
+        self._indexed: Set[str] = set()
+        self._indexed_mtimes: dict[str, int] = {}
+        self._init_client()
+
+    # ------------------------------------------------------------------ #
+    #  ChromaDB
+    # ------------------------------------------------------------------ #
+
+    def _init_client(self) -> None:
+        try:
+            import chromadb
+        except ImportError as exc:
+            log.error("chromadb не установлен: RAG-документы недоступны: %s", exc)
+            return
+
+        # Подавляем сломанную телеметрию ChromaDB (см. long_term.py).
+        from core.memory.long_term import disable_chroma_telemetry_noise
+        disable_chroma_telemetry_noise()
+
+        try:
+            documents_dir = self._settings.paths.resolved("documents_dir")
+            documents_dir.mkdir(parents=True, exist_ok=True)
+            # anonymized_telemetry=False — отключаем сетевую телеметрию
+            # ChromaDB (шум в логах), функциональность RAG не меняется.
+            self._client = chromadb.PersistentClient(
+                path=str(documents_dir / ".chroma"),
+                settings=chromadb.Settings(anonymized_telemetry=False),
+            )
+            self._collection = self._client.get_or_create_collection(
+                name=DOCUMENTS_COLLECTION,
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._initialized = True
+            log.info("RAG-документы инициализированы: %s", documents_dir)
+        except Exception as exc:
+            log.error("Не удалось инициализировать RAG ChromaDB: %s", exc)
+            self._initialized = False
+
+    def _ensure(self) -> bool:
+        if self._initialized and self._collection is not None:
+            return True
+        if self._client is None:
+            self._init_client()
+        return self._initialized and self._collection is not None
+
+    # ------------------------------------------------------------------ #
+    #  Индексация
+    # ------------------------------------------------------------------ #
+
+    def index_file(self, path: Path) -> int:
+        """Индексирует один файл. Возвращает число добавленных чанков.
+
+        Args:
+            path: путь к .txt/.md/.pdf файлу.
+
+        Returns:
+            Количество успешно добавленных чанков (0 при ошибке/пустом файле).
+        """
+        path = Path(path)
+        if not self._ensure():
+            return 0
+        if not path.is_file():
+            log.warning("Файл не существует: %s", path)
+            return 0
+        if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+            log.debug("Пропущен неподдерживаемый формат: %s", path)
+            return 0
+
+        try:
+            text = read_document(path)
+        except Exception as exc:
+            log.warning("Не удалось прочитать %s: %s — пропускаю", path, exc)
+            return 0
+
+        chunks = chunk_text(text)
+        if not chunks:
+            log.debug("Файл пуст после извлечения текста: %s", path)
+            return 0
+
+        # Стабильный id чанка, чтобы повторная индексация не дублировала.
+        file_key = str(path.resolve())
+        try:
+            ids = [f"{hashlib.md5(file_key.encode()).hexdigest()}-{i}" for i in range(len(chunks))]
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            metadatas = [{
+                "source": file_key,
+                "chunk_index": i,
+                "sha256": digest,
+                "mtime_ns": path.stat().st_mtime_ns,
+
+===== core/state.py =====
+"""Состояние графа Джарвиса — единый контракт между всеми узлами.
+
+``JarvisState`` передаётся по цепочке узлов оркестратора (Часть 2):
+
+    intake -> council_route -> memory_retrieve -> plan -> action_loop
+           -> generate -> output
+
+Каждый узел получает состояние, дописывает свои поля и возвращает его.
+Правило: узлы НЕ удаляют чужие поля и НЕ меняют типы — иначе следующие
+модули (router / memory / actions / voice / hud) сломаются.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, TypedDict
+
+__all__ = [
+    "Message",
+    "PlanStep",
+    "ActionResult",
+    "RetrievedContext",
+    "JarvisState",
+    "new_state",
+    "utc_timestamp",
+    "push_message",
+    "trim_short_memory",
+]
+
+Role = Literal["system", "user", "assistant", "tool"]
+
+
+class Message(TypedDict, total=False):
+    """Сообщение диалога (совместимо с форматом OpenAI chat messages)."""
+
+    role: Role
+    content: str
+    name: str          # опционально: имя инструмента для role="tool"
+    timestamp: str     # ISO-8601 UTC
+
+
+class PlanStep(TypedDict, total=False):
+    """Шаг плана, сформированного планировщиком (Часть 4)."""
+
+    index: int
+    description: str          # что нужно сделать, человекочитаемо
+    tool: Optional[str]       # имя инструмента из реестра или None (=просто рассуждение)
+    args: Dict[str, Any]      # аргументы инструмента
+    status: Literal["pending", "running", "done", "failed", "skipped"]
+
+
+class ActionResult(TypedDict, total=False):
+    """Результат выполнения одного инструмента Action Engine."""
+
+    tool: str
+    args: Dict[str, Any]
+    ok: bool
+    output: str               # текстовый результат для подстановки в промпт
+    error: Optional[str]
+    duration_sec: float
+    step_index: Optional[int]
+
+
+class RetrievedContext(TypedDict, total=False):
+    """Контекст, собранный слоями памяти (Часть 3).
+
+    Ключи независимы: если слой недоступен, он просто отсутствует.
+    """
+
+    profile: str                     # выжимка profile.json
+    long_term: List[str]             # факты из ChromaDB
+    documents: List[str]             # фрагменты RAG по файлам
+    graph: List[str]                 # узлы knowledge graph
+    time_context: str                # дата/время/локация
+    persona: str                     # текст persona.md
+
+
+class JarvisState(TypedDict, total=False):
+    """Полное состояние одного витка обработки запроса.
+
+    total=False: узлы дописывают поля постепенно, а не все сразу.
+    ``new_state()`` создаёт состояние со всеми ключами и безопасными
+    значениями по умолчанию — используйте её, чтобы не проверять наличие
+    ключей в каждом узле.
+    """
+
+    user_input: str                        # текст пользователя (микрофона нет)
+    intent: Optional[str]                  # категория от keyword-роутера: app/media/web/...
+    executive: Dict[str, Any]              # bounded Executive Mind snapshot
+    tier: str                              # выбранный тир совета: fast/analyst/coder/architect
+    short_memory: List[Message]            # последние N сообщений (ОЗУ)
+    retrieved_context: RetrievedContext    # что подняли слои памяти
+    plan: Optional[List[PlanStep]]         # план действий или None
+    action_results: List[ActionResult]      # результаты инструментов
+    response: Optional[str]                # финальный текст ответа
+    tts_text: Optional[str]                # текст для озвучки (может быть короче response)
+    assistant_output: Dict[str, Any]       # typed display/speech/debug/error contract
+    timestamp: str                         # ISO-8601 UTC начала витка
+    error: Optional[str]                   # человекочитаемая ошибка витка
+
+    # --- служебные поля (не входят в обязательный контракт) ---
+    source: str                            # 'user' | 'proactive' | 'reminder'
+    escalations: List[str]                  # история эскалаций тиров за виток
+    latency: Dict[str, float]               # тайминги узлов, сек
+    task_contract: Dict[str, Any]           # normalized Universal Intake contract
+    evidence: List[Dict[str, Any]]          # bounded claim/action evidence
+    latency_budget: Dict[str, Any]          # active numerical budget metadata
+    tool: str                               # selected tool, if any
+    verified: bool                          # independent verification result
+    mode: str                               # active execution mode
+
+
+def utc_timestamp() -> str:
+    """Текущее время в ISO-8601 UTC (с точностью до секунд)."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def new_state(
+    user_input: str,
+    short_memory: Optional[List[Message]] = None,
+    source: str = "user",
+    tier: str = "fast",
+) -> JarvisState:
+    """Создаёт состояние с заполненными значениями по умолчанию.
+
+    Args:
+        user_input: текст пользователя (или текст-триггер для проактивного витка).
+        short_memory: краткая память диалога; список НЕ копируется по значению —
+            передавайте копию, если не хотите, чтобы узлы его мутировали.
+        source: кто инициировал виток ('user' / 'proactive' / 'reminder').
+        tier: стартовый тир (по умолчанию лицо Джарвиса — 'fast').
+    """
+    state = JarvisState(
+        user_input=user_input,
+        intent=None,
+        executive={},
+        tier=tier,
+        short_memory=list(short_memory) if short_memory else [],
+        retrieved_context=RetrievedContext(),
+        plan=None,
+        action_results=[],
+        response=None,
+        tts_text=None,
+        assistant_output={},
+        timestamp=utc_timestamp(),
+        error=None,
+        source=source,
+        escalations=[],
+        latency={},
+        task_contract={},
+        evidence=[],
+        latency_budget={},
+        tool="",
+        verified=False,
+        mode="conversation",
+    )
+    # Every state-producing path is self-describing.  The local import avoids
+    # a cycle while the router package is initialising.
+    try:
+        from core.router.intent_router import resolve_keyword_tool
+        state["intent"] = resolve_keyword_tool(user_input, user_input)
+    except Exception:
+        state["intent"] = None
+    return state
+
+
+def push_message(state: JarvisState, role: Role, content: str,
+                 name: Optional[str] = None, limit: Optional[int] = None) -> None:
+    """Добавляет сообщение в краткую память состояния (мутирует state).
+
+    Args:
+        limit: если задан — краткая память сразу обрезается до ``limit``
+            последних сообщений (``settings.limits.short_memory_size``).
+    """
+    message: Message = {"role": role, "content": content, "timestamp": utc_timestamp()}
+    if name:
+        message["name"] = name
+    memory = state.setdefault("short_memory", [])
+    memory.append(message)
+    if limit is not None:
+        trim_short_memory(state, limit)
+
+
+def trim_short_memory(state: JarvisState, limit: int) -> None:
+    """Обрезает краткую память до ``limit`` последних сообщений (мутирует state)."""
+    if limit <= 0:
+        state["short_memory"] = []
+        return
+    memory = state.get("short_memory") or []
+    if len(memory) > limit:
+        state["short_memory"] = memory[-limit:]
+
+===== pyproject.toml =====
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "living-jarvis"
+version = "0.1.0"
+description = "Живой Джарвис — локальный ИИ-ассистент: Qwen 4B на лице, совет мудрецов из удалённых моделей, многослойная память"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Living Jarvis Team" }]
+keywords = ["assistant", "llm", "llama-cpp", "chromadb", "rag", "windows"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Точные версии — в requirements.txt. Здесь только границы совместимости.
+dependencies = [
+    "llama-cpp-python>=0.3.0",
+    "chromadb>=0.5.0,<0.6",
+    "requests>=2.32",
+    "tenacity>=9.0",
+    "PyAutoGUI>=0.9.54",
+    "psutil>=6.0",
+    "pyperclip>=1.9",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pystray>=0.19",
+    "Pillow>=10.4,<13",
+    "piper-tts>=1.3",
+    "pydantic>=2.8,<3",
+    "numpy>=1.26,<3",
+    "jsonschema>=4.23,<5",
+    "pypdf>=5.0",
+    "python-docx>=1.2",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "pytesseract>=0.3.13",
+    "mss>=10.0",
+    "pygetwindow>=0.0.9",
+    "pycaw>=20251023; sys_platform == 'win32'",
+    "plyer>=2.1",
+    "win10toast>=0.9; sys_platform == 'win32'",
+    "webrtcvad-wheels>=2.0.14",
+    "openwakeword>=0.6",
+    "PyAudio>=0.2.14",
+    "pywin32>=310,<312; sys_platform == 'win32'",
+    "pywinauto==0.6.9; sys_platform == 'win32'",
+    # Браузерная автоматизация (SPRINT P2-B): единственная зависимость для
+    # управления браузером (Browser Use style). Selenium/Playwright ранее
+    # в проекте не было.
+    "playwright>=1.45",
+]
+
+[project.optional-dependencies]
+stt = ["faster-whisper>=1.0.3", "sounddevice>=0.4", "scipy>=1.11"]
+dev = ["pytest>=8.3", "pytest-mock>=3.14", "flake8>=7.1", "mypy>=1.11"]
+
+[project.scripts]
+jarvis = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["config*", "core*", "hud*", "persona*"]
+exclude = ["tests*", "artifacts*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 110
+exclude = [".git", "__pycache__", "data", "build", "dist"]
+
+===== requirements.txt =====
+# ============================================================================
+#  Живой Джарвис — зависимости (Python 3.11+)
+#
+#  ВАЖНО ПРО УСТАНОВКУ:
+#    `pip install -r requirements.txt` ставит ВСЁ, КРОМЕ llama-cpp-python.
+#    llama-cpp-python на Windows НЕТ на PyPI в виде готового wheel — pip
+#    попытается собрать его из исходников (C++), это долго и падает без
+#    компилятора. Поэтому он ставится ОТДЕЛЬНОЙ командой (см. блок внизу),
+#    подбирая готовый wheel через --extra-index-url.
+# ============================================================================
+
+# --- Локальный LLM (Qwen 4B GGUF, БЕЗ Ollama) -------------------------------
+# СТАВИТСЯ ОТДЕЛЬНО (см. блок "УСТАНОВКА llama-cpp-python" внизу файла).
+# Не раскомментируйте здесь — иначе pip зависнет на сборке из исходников.
+
+# --- Векторная память ------------------------------------------------------
+chromadb==0.5.23
+
+# --- HTTP-клиент к удалённым моделям (DeepSeek / Kimi / Claude) ------------
+requests==2.32.3
+tenacity==9.0.0
+
+# --- Системная автоматизация (Windows-приложения, метрики) -----------------
+PyAutoGUI==0.9.54
+psutil==6.1.0
+pyperclip==1.9.0
+
+# --- Веб-поиск и парсинг страниц -------------------------------------------
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# --- Windows-интеграция (toast-уведомления, COM, окна) ---------------------
+pywin32==311; sys_platform == "win32"
+pywinauto==0.6.9; sys_platform == "win32"
+
+# --- GUI: системный трей (tkinter входит в стандартную поставку Python) -----
+pystray==0.19.5
+Pillow>=10.4,<13
+
+# --- Озвучка (Piper TTS) ---------------------------------------------------
+# Если pip-пакет не встанет — используйте standalone-бинарь piper.exe и
+# укажите путь в settings.json -> voice.piper_binary_path
+piper-tts==1.3.0
+
+# --- Валидация конфигурации ------------------------------------------------
+pydantic==2.9.2
+jsonschema>=4.23,<5
+
+# --- Числовая база ---------------------------------------------------------
+# Доноры конфликтовали по numpy (2.x vs <2). Фиксируем ДИАПАЗОН, а не
+# жёсткую версию: piper-tts тянет onnxruntime, которому нужен numpy>=2,
+# поэтому <3 держит совместимость со старыми бинарными wheel'ами, а >=1.26
+# — с chromadb/llama-cpp.
+numpy>=1.26,<3
+
+# --- Документный RAG (используется модулем core/memory, Часть 3) -----------
+pypdf==5.1.0
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+pytesseract==0.3.13
+mss==10.2.0
+PyGetWindow==0.0.9
+pycaw==20251023; sys_platform == "win32"
+plyer==2.1.0
+win10toast==0.9; sys_platform == "win32"
+webrtcvad-wheels==2.0.14
+openwakeword==0.6.0
+PyAudio==0.2.14
+
+# --- Браузерная автоматизация (SPRINT P2-B: browser automation) -----------
+# Единственная зависимость для управления браузером (Browser Use style).
+# Ни Playwright, ни Selenium ранее в проекте НЕ было — добавлена одна.
+# После установки выполните:  python -m playwright install chromium
+playwright>=1.45
+
+# --- STT (распознавание речи, P5 §5.9) -----------------------------------
+# ОПЦИОНАЛЬНО: ставится только если нужен голосовой ввод.
+# faster-whisper — MIT, локальное распознавание без юридических рисков.
+# sounddevice + scipy нужны для записи с микрофона (listen_once).
+# Активируется флагом settings.voice.stt_enabled=True.
+#     pip install faster-whisper sounddevice scipy
+faster-whisper>=1.0
+sounddevice>=0.4
+scipy>=1.11
+
+
+# ============================================================================
+#  УСТАНОВКА llama-cpp-python НА WINDOWS
+# ============================================================================
+#
+#  Вариант A — CPU (ничего собирать не нужно, работает всегда):
+#      pip install llama-cpp-python==0.3.16
+#
+#  Вариант B — ГОТОВЫЙ CUDA-WHEEL (рекомендуется, компилятор НЕ нужен).
+#  Подберите индекс под свою версию CUDA Toolkit (cu121 / cu122 / cu124):
+#      pip install llama-cpp-python==0.3.16 ^
+#          --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#
+#  Вариант C — сборка из исходников с CUDA (только при наличии компилятора):
+#  Требуется: Visual Studio 2022 Build Tools (C++ workload) + CUDA Toolkit + CMake.
+#      set CMAKE_ARGS=-DGGML_CUDA=on
+#      set FORCE_CMAKE=1
+#      pip install llama-cpp-python==0.3.16 --no-binary llama-cpp-python
+#
+#  Вариант D — сборка с OpenBLAS (ускорение на CPU без GPU):
+#      set CMAKE_ARGS=-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS
+#      pip install llama-cpp-python==0.3.16 --no-binary llama-cpp-python
+#
+#  После установки CUDA-сборки не забудьте в settings.json выставить
+#  local_model.n_gpu_layers = -1 (все слои на GPU) или, например, 20.
+#  При n_gpu_layers = 0 модель считается на CPU.
+# ============================================================================

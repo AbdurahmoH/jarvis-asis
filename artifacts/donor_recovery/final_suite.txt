@@ -1,0 +1,26 @@
+........................................................................ [  8%]
+........................................................................ [ 17%]
+..........................ss............................................ [ 26%]
+........................................................................ [ 35%]
+........................................................................ [ 44%]
+........................................................................ [ 53%]
+........................................................................ [ 62%]
+........................................................................ [ 71%]
+........................................................................ [ 80%]
+........................................................................ [ 89%]
+........................................................................ [ 98%]
+................                                                         [100%]
+============================== warnings summary ===============================
+core\ws_server.py:60
+  E:\jarvis-2.4-main\core\ws_server.py:60: DeprecationWarning: websockets.server.serve is deprecated
+    from websockets.server import serve
+
+C:\Users\WwW\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\websockets\legacy\__init__.py:6
+  C:\Users\WwW\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_model_failure.py:101: FAST-��� �� �������� �� �������� ���������� � ���� ������������
+SKIPPED [1] tests\test_model_failure.py:121: ANALYST-��� �� �������� �� �������� ���������� � ���� ������������
+806 passed, 2 skipped, 1 deselected, 2 warnings in 114.04s (0:01:54)

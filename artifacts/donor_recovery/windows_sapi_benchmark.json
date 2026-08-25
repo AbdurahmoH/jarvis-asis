@@ -1,0 +1,50 @@
+[
+  {
+    "engine": "windows_sapi",
+    "sample": "01_neutral",
+    "ok": true,
+    "wall_s": 0.2152,
+    "rss_delta_mb": 7.203,
+    "size_bytes": 46
+  },
+  {
+    "engine": "windows_sapi",
+    "sample": "02_casual",
+    "ok": true,
+    "wall_s": 0.0314,
+    "rss_delta_mb": 0.367,
+    "size_bytes": 46
+  },
+  {
+    "engine": "windows_sapi",
+    "sample": "03_long_sentence",
+    "ok": true,
+    "wall_s": 0.0219,
+    "rss_delta_mb": 0.23,
+    "size_bytes": 46
+  },
+  {
+    "engine": "windows_sapi",
+    "sample": "04_question",
+    "ok": true,
+    "wall_s": 0.02,
+    "rss_delta_mb": 0.289,
+    "size_bytes": 46
+  },
+  {
+    "engine": "windows_sapi",
+    "sample": "05_task_complete",
+    "ok": true,
+    "wall_s": 0.0205,
+    "rss_delta_mb": 0.188,
+    "size_bytes": 46
+  },
+  {
+    "engine": "windows_sapi",
+    "sample": "06_error_recovery",
+    "ok": true,
+    "wall_s": 0.0282,
+    "rss_delta_mb": 0.227,
+    "size_bytes": 46
+  }
+]

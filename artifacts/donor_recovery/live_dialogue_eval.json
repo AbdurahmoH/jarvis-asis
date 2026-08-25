@@ -1,0 +1,34 @@
+[
+  {
+    "query": "привет",
+    "response": "Привет. Чем могу помочь?",
+    "mode": "conversation",
+    "route": "reflex",
+    "latency_s": 3.058,
+    "tool": ""
+  },
+  {
+    "query": "как дела?",
+    "response": "Всё в порядке, работаю в штатном режиме. Чем могу помочь?",
+    "mode": "conversation",
+    "route": "reflex",
+    "latency_s": 1.159,
+    "tool": ""
+  },
+  {
+    "query": "мне сегодня вообще лень учиться",
+    "response": "Понимаю. Может, стоит начать с малого — пять минут, а дальше само пойдёт.",
+    "mode": "conversation",
+    "route": "clarify",
+    "latency_s": 2.807,
+    "tool": ""
+  },
+  {
+    "query": "почему моча бывает жёлтая?",
+    "response": "Моча жёлтая из-за пигмента урохрома, который образуется при распаде гемоглобина.",
+    "mode": "conversation",
+    "route": "quick_answer",
+    "latency_s": 1.766,
+    "tool": ""
+  }
+]

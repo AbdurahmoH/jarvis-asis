@@ -25,7 +25,7 @@ interface Props {
   runtimeState: string; runtimeDiagnostics: Record<string, unknown>; signals: LiveSignal[];
 }
 
-type VisualState = 'idle' | 'listening' | 'thinking' | 'executing' | 'speaking' | 'success' | 'error' | 'starting';
+type VisualState = 'idle' | 'listening' | 'thinking' | 'executing' | 'speaking' | 'waiting' | 'needs_user' | 'repairing' | 'success' | 'error' | 'starting';
 type CardKind = 'system' | 'weather' | 'music' | 'research' | 'files' | 'computer' | 'task';
 const CLOCK = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
@@ -49,7 +49,9 @@ function visualMeta(props: Pick<Props, 'state' | 'signals' | 'confirmation' | 'c
   const latest = props.signals.at(-1);
   if (props.runtimeState === 'starting' || props.runtimeState === 'loading_model') return { state: 'starting' as const, label: 'Запуск', detail: 'Модель проходит проверку' };
   if (!props.connected || props.runtimeState === 'unavailable' || props.state === 'error') return { state: 'error' as const, label: 'Ошибка', detail: 'Открой диагностику' };
-  if (props.confirmation) return { state: 'executing' as const, label: 'Нужно решение', detail: 'Действие ждёт подтверждения' };
+  if (props.confirmation) return { state: 'needs_user' as const, label: 'Нужно решение', detail: 'Жду твоего подтверждения' };
+  if (latest && /repair|retry|self.correct/i.test(`${latest.status} ${latest.kind}`)) return { state: 'repairing' as const, label: 'Исправляю', detail: latest.content };
+  if (latest && /waiting|paused|scheduled|pending/i.test(latest.status)) return { state: 'waiting' as const, label: 'Жду', detail: latest.content };
   if (latest && /failed|error/i.test(latest.status)) return { state: 'error' as const, label: 'Не выполнено', detail: latest.content };
   if (isVerified(latest)) return { state: 'success' as const, label: 'Готово', detail: 'Результат подтверждён' };
   if (props.state === 'listening') return { state: 'listening' as const, label: 'Слушаю', detail: 'Говори' };

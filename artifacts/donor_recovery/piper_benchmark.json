@@ -1,0 +1,62 @@
+[
+  {
+    "engine": "piper",
+    "sample": "01_neutral",
+    "ok": true,
+    "wall_s": 1.1025,
+    "duration_s": 2.2692,
+    "rtf": 0.4858,
+    "rss_delta_mb": 0.18,
+    "size_bytes": 100116
+  },
+  {
+    "engine": "piper",
+    "sample": "02_casual",
+    "ok": true,
+    "wall_s": 1.2267,
+    "duration_s": 2.1389,
+    "rtf": 0.5735,
+    "rss_delta_mb": 0.0,
+    "size_bytes": 94368
+  },
+  {
+    "engine": "piper",
+    "sample": "03_long_sentence",
+    "ok": true,
+    "wall_s": 1.4012,
+    "duration_s": 5.8308,
+    "rtf": 0.2403,
+    "rss_delta_mb": 0.0,
+    "size_bytes": 257184
+  },
+  {
+    "engine": "piper",
+    "sample": "04_question",
+    "ok": true,
+    "wall_s": 1.3667,
+    "duration_s": 2.9051,
+    "rtf": 0.4704,
+    "rss_delta_mb": 0.0,
+    "size_bytes": 128160
+  },
+  {
+    "engine": "piper",
+    "sample": "05_task_complete",
+    "ok": true,
+    "wall_s": 0.6796,
+    "duration_s": 3.1748,
+    "rtf": 0.2141,
+    "rss_delta_mb": 0.0,
+    "size_bytes": 140052
+  },
+  {
+    "engine": "piper",
+    "sample": "06_error_recovery",
+    "ok": true,
+    "wall_s": 0.7463,
+    "duration_s": 4.6144,
+    "rtf": 0.1617,
+    "rss_delta_mb": 0.0,
+    "size_bytes": 203540
+  }
+]

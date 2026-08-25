@@ -1,0 +1,55 @@
+{
+  "baseline_commit": "ce1af9584756df228ecc8a03e9eb5bca5900d224",
+  "before": {
+    "p0_p2c_tests": "116 passed in 8.00s (prior verified baseline)",
+    "known_dialogue": "repeated honorific/canned ACK; no turn generation tracking",
+    "study": "plain wrapped text chunks without citation objects or quiz state"
+  },
+  "after": {
+    "focused_tests": "122 passed in 9.03s",
+    "broader_suite": "806 passed, 2 skipped, 1 deselected",
+    "frontend": "vite production build passed",
+    "live_dialogue_avg_s": 2.197,
+    "live_dialogue_outputs": [
+      {
+        "query": "привет",
+        "response": "Привет. Чем могу помочь?",
+        "mode": "conversation",
+        "route": "reflex",
+        "latency_s": 3.058,
+        "tool": ""
+      },
+      {
+        "query": "как дела?",
+        "response": "Всё в порядке, работаю в штатном режиме. Чем могу помочь?",
+        "mode": "conversation",
+        "route": "reflex",
+        "latency_s": 1.159,
+        "tool": ""
+      },
+      {
+        "query": "мне сегодня вообще лень учиться",
+        "response": "Понимаю. Может, стоит начать с малого — пять минут, а дальше само пойдёт.",
+        "mode": "conversation",
+        "route": "clarify",
+        "latency_s": 2.807,
+        "tool": ""
+      },
+      {
+        "query": "почему моча бывает жёлтая?",
+        "response": "Моча жёлтая из-за пигмента урохрома, который образуется при распаде гемоглобина.",
+        "mode": "conversation",
+        "route": "quick_answer",
+        "latency_s": 1.766,
+        "tool": ""
+      }
+    ],
+    "piper_dmitri_avg_rtf": 0.3576,
+    "piper_denis_avg_rtf": 0.3378,
+    "voice_interrupt": "monotonic generation invalidates queued/active completion context",
+    "study": "structured DocumentHit citations + bounded StudySession weak-topic retry"
+  },
+  "tts_decision": "Keep Dmitri default on measured CPU latency/RTF. Denis samples supplied for human listening. Windows SAPI produced header-only files and is rejected. Chatterbox source is MIT but weights license/8GB footprint gate is unresolved, so it was not installed or shipped.",
+  "computer_use": "No code change: existing DOM-first BrowserBridge already enforces session identity, stale-DOM rejection and post-action observation; current stack already matches selected donor mechanism.",
+  "dependencies_installed": []
+}

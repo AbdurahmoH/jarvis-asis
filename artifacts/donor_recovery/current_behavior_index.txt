@@ -1,0 +1,1916 @@
+core\actions\browser_automation.py:17:``requires_confirmation`` и НЕ выполняет действие без явного флага
+core\actions\browser_automation.py:18:``confirm=True`` на вызове. Сам инструмент не решает, продолжать или нет —
+core\actions\browser_automation.py:20:мог подключить confirmation-flow позже.
+core\actions\browser_automation.py:67:    "purchase", "confirm", "place order", "donate", "login", "signin",
+core\actions\browser_automation.py:74:# в документном порядке и возвращает метаданные + requires_confirmation.
+core\actions\browser_automation.py:76:  const els = Array.from(document.querySelectorAll(selector));
+core\actions\browser_automation.py:119:      requires_confirmation: classify(el),
+core\actions\browser_automation.py:225:        except Exception as exc:  # pragma: no cover - защита от утечек
+core\actions\browser_automation.py:230:        except Exception as exc:  # pragma: no cover
+core\actions\browser_automation.py:235:        except Exception as exc:  # pragma: no cover
+core\actions\browser_automation.py:240:        except Exception as exc:  # pragma: no cover
+core\actions\browser_automation.py:259:        aria_label, placeholder, disabled, visible, requires_confirmation.
+core\actions\browser_automation.py:280:    def click(self, index: int, confirm: bool = False, timeout: int = 15000) -> Dict[str, Any]:
+core\actions\browser_automation.py:283:        Если элемент помечен как requires_confirmation и confirm != True —
+core\actions\browser_automation.py:284:        возвращает requires_confirmation=True, action_taken=False и НЕ кликает.
+core\actions\browser_automation.py:292:        requires = bool(element["requires_confirmation"])
+core\actions\browser_automation.py:293:        if requires and not confirm:
+core\actions\browser_automation.py:296:                "requires_confirmation": True,
+core\actions\browser_automation.py:300:                "reason": "Действие требует подтверждения (submit/pay/send). Передайте confirm=True.",
+core\actions\browser_automation.py:310:        return {"ok": True, "requires_confirmation": requires, "action_taken": True, "index": index}
+core\actions\browser_automation.py:371:      click — {index, confirm?}
+core\actions\browser_automation.py:376:    Состояние браузера хранится в экземпляре инструмента (stateful session).
+core\actions\browser_automation.py:400:            "Опасные элементы (submit/pay/send) помечаются requires_confirmation "
+core\actions\browser_automation.py:401:            "и не срабатывают без confirm=true. Действия: open(url), list(), "
+core\actions\browser_automation.py:402:            "click(index, confirm?), type(index, text), read(index?), close()."
+core\actions\browser_automation.py:421:                "confirm": {
+core\actions\browser_automation.py:442:                result = engine.click(int(args["index"]), confirm=bool(args.get("confirm", False)))
+core\actions\base.py:4:``ToolContext`` — контекст выполнения (доступ к settings, state, user_id).
+core\actions\base.py:16:from core.state import JarvisState
+core\actions\base.py:26:        state: текущее состояние витка (JarvisState) — для чтения
+core\actions\base.py:33:    state: Optional[JarvisState] = None
+core\actions\base.py:35:    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+core\actions\base.py:98:    # Tools may opt into hard subprocess cancellation. Legacy in-process
+core\actions\base.py:99:    # tools remain API-compatible and receive cooperative cancellation only.
+core\actions\base.py:100:    supports_hard_cancellation: bool = False
+core\actions\base.py:123:            context: контекст выполнения (settings, state, user_id).
+core\actions\browser_bridge.py:51:            "click/type/download and execute-observe-verify results. confirm=true alone "
+core\actions\browser_bridge.py:74:                "confirm": {"type": "boolean"},
+core\actions\browser_bridge.py:75:                "expected_state": {"type": "object"},
+core\actions\browser_bridge.py:92:        value = context.extra.get("confirmation_grant") if isinstance(context.extra, dict) else None
+core\actions\browser_bridge.py:108:        """Bind Agent confirmation to the exact live DOM target.
+core\actions\browser_bridge.py:117:        if not bool(context.extra.get("confirmation_approved")):
+core\actions\browser_bridge.py:143:        documents_dir = getattr(settings, "documents_dir", None)
+core\actions\browser_bridge.py:144:        if documents_dir is None:
+core\actions\browser_bridge.py:146:        root = Path(documents_dir).expanduser().resolve() / "downloads"
+core\actions\browser_bridge.py:151:            raise ValueError("download directory must stay inside documents_dir/downloads")
+core\actions\browser_bridge.py:188:                    confirm=bool(args.get("confirm", False)),
+core\actions\browser_bridge.py:189:                    confirmation_grant=grant,
+core\actions\browser_bridge.py:190:                    expected_state=args.get("expected_state"),
+core\actions\browser_bridge.py:200:                    confirmation_grant=self._grant(context),
+core\actions\browser_bridge.py:201:                    expected_state=args.get("expected_state"),
+core\actions\browser_bridge.py:218:                    confirmation_grant=grant,
+core\actions\browser_bridge.py:219:                    expected_state=args.get("expected_state"),
+core\actions\browser_bridge.py:238:                    confirm=bool(args.get("confirm", False)),
+core\actions\browser_bridge.py:239:                    confirmation_grant=grant,
+core\actions\computer_use.py:171:        return "Captures the physical Windows desktop to a PNG inside documents_dir and reports the active window."
+core\actions\computer_use.py:182:        root = Path(context.settings.documents_dir).expanduser().resolve()
+core\actions\computer_use.py:186:            return ActionResult(self.name, args, False, error="screenshot path escapes documents_dir")
+core\agent.py:96:__all__ = ["Agent", "AgentConfig", "AgentOutcome", "ACK_PHRASES", "pick_acknowledgement"]
+core\agent.py:146:ACK_PHRASES: Dict[str, str] = {
+core\agent.py:147:    "app": "Принято, сэр.",
+core\agent.py:150:    "browser": "Понял, сэр.",
+core\agent.py:152:    "media": "Понял, сэр.",
+core\agent.py:153:    "none": "Понял, сэр. Разбираюсь.",
+core\agent.py:172:    base = ACK_PHRASES.get(intent, ACK_PHRASES["none"])
+core\agent.py:192:            f"Примеры стиля: \"{base}\", \"Есть, сэр.\", \"Слушаюсь.\""
+core\agent.py:226:    auto_confirm_high_risk: bool = False   # §21 — HIGH требует человека
+core\agent.py:228:    confirmation_timeout_sec: float = 30.0  # П1 §1.3: таймаут ожидания подтверждения -> авто-reject
+core\agent.py:239:    needs_confirmation: bool = False
+core\agent.py:240:    confirmation_id: Optional[str] = None
+core\agent.py:256:            "needs_confirmation": self.needs_confirmation,
+core\agent.py:257:            "confirmation_id": self.confirmation_id,
+core\agent.py:295:    ``TaskRuntime`` в фоновом потоке. Отмена приходит через ``cancel``.
+core\agent.py:330:        # Executive Mind owns goals/commitments/world state, while this Agent
+core\agent.py:338:                "documents": settings.paths.resolved("documents_dir"),
+core\agent.py:374:        self._pending_confirmations: Dict[str, Dict[str, Any]] = {}
+core\agent.py:375:        self._confirmation_timers: Dict[str, "threading.Timer"] = {}
+core\agent.py:388:        # state. The resulting compact prompt fragment is only one consumer;
+core\agent.py:441:        """Updates privacy-minimal attention state used for response style."""
+core\agent.py:570:    def run_mission(self, mission: Mission, cancel: threading.Event) -> str:
+core\agent.py:574:        на длительность (§4) — только реальная отмена через ``cancel``.
+core\agent.py:589:            except Exception:  # pragma: no cover - события не ломают генерацию
+core\agent.py:594:            outcome = self.execute(mission.goal, mission=mission, cancel=cancel)
+core\agent.py:600:        if outcome.needs_confirmation:
+core\agent.py:601:            mission.metadata["needs_confirmation"] = True
+core\agent.py:617:                cancel: Optional[threading.Event] = None) -> AgentOutcome:
+core\agent.py:649:        outcome = self._execute_core(goal, mission, cancel)
+core\agent.py:666:            except Exception as exc:  # Personality wording never changes mission state.
+core\agent.py:705:            if not goal or outcome.mode in ("empty", "cancelled"):
+core\agent.py:717:                      cancel: Optional[threading.Event] = None) -> AgentOutcome:
+core\agent.py:718:        cancel = cancel or threading.Event()
+core\agent.py:721:            return AgentOutcome(text="Сэр, я не расслышал команду.", mode="empty")
+core\agent.py:746:        perception = self._try_world_perception(goal, mission, cancel, risk, trace)
+core\agent.py:755:                goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:772:        if compound and not risk.needs_confirmation:
+core\agent.py:776:            return self._execute_compound(compound, mission=mission, cancel=cancel, trace=trace)
+core\agent.py:792:        if cancel.is_set():
+core\agent.py:793:            return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
+core\agent.py:823:            goal, intent, mission, cancel, risk,
+core\agent.py:845:                goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:854:            return self._handle_research(goal, mission, cancel, trace)
+core\agent.py:856:        if cancel.is_set():
+core\agent.py:857:            return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
+core\agent.py:895:                    goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:908:                goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:917:            goal, caps, mission, cancel,
+core\agent.py:927:        if cancel.is_set():
+core\agent.py:928:            return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
+core\agent.py:942:            # into the conversational finalizer; use capability requirements
+core\agent.py:955:                    clarification = self._finalize_tool_response(
+core\agent.py:975:                    goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:980:                text, finalize_error = self._finalize_conversational_response(
+core\agent.py:989:                        MODEL_ERROR_PREFIX + f"финальная реплика DeepSeek не сформирована: {finalize_error}",
+core\agent.py:996:            text = text or "Готов, сэр."
+core\agent.py:1023:                        goal, mission, cancel, trace, routing, memory_ctx,
+core\agent.py:1034:                final = self._finalize_tool_response(
+core\agent.py:1069:            clarification = self._finalize_tool_response(
+core\agent.py:1090:        if (exec_risk.needs_confirmation and not authority.allowed
+core\agent.py:1091:                and not self._config.auto_confirm_high_risk):
+core\agent.py:1096:                    "confirmation_id": conf_id,
+core\agent.py:1100:                    "prompt": exec_risk.confirmation_prompt(),
+core\agent.py:1104:            # было ответить (confirm/reject) и продолжить или отменить.
+core\agent.py:1106:                self._pending_confirmations[conf_id] = {
+core\agent.py:1114:                    "cancel": cancel,
+core\agent.py:1116:                    "loop_state": {
+core\agent.py:1125:            # за confirmation_timeout_sec — безопасный авто-reject (отказ).
+core\agent.py:1126:            self._start_confirmation_watchdog(conf_id)
+core\agent.py:1128:                text=exec_risk.confirmation_prompt(),
+core\agent.py:1130:                needs_confirmation=True,
+core\agent.py:1131:                confirmation_id=conf_id,
+core\agent.py:1134:                mode="confirmation",
+core\agent.py:1147:                cancel=cancel,
+core\agent.py:1158:            cancel=cancel,
+core\agent.py:1330:    def answer_confirmation(self, confirmation_id: str, approved: bool) -> Optional[AgentOutcome]:
+core\agent.py:1334:            confirmation_id: id, выданный при запросе подтверждения.
+core\agent.py:1341:            pending = self._pending_confirmations.pop(confirmation_id, None)
+core\agent.py:1343:            timer = self._confirmation_timers.pop(confirmation_id, None)
+core\agent.py:1345:                timer.cancel()
+core\agent.py:1355:        cancel = pending["cancel"]
+core\agent.py:1361:                mission.emit(EVENT_TASK_FAILED, payload={"reason": "confirmation_rejected"})
+core\agent.py:1363:                text="Понял, сэр. Действие отменено.",
+core\agent.py:1365:                mode="confirmation_rejected",
+core\agent.py:1383:                skip_confirmation=True,
+core\agent.py:1399:            loop_state = pending.get("loop_state") or {}
+core\agent.py:1404:                cancel=cancel,
+core\agent.py:1408:                routing=loop_state.get("routing"),
+core\agent.py:1409:                memory_ctx=str(loop_state.get("memory_ctx") or ""),
+core\agent.py:1410:                initial_observations=loop_state.get("observations") or [],
+core\agent.py:1411:                start_step=int(loop_state.get("start_step") or 0),
+core\agent.py:1412:                confirmation_approved=True,
+core\agent.py:1413:                required_capability_ids=loop_state.get("required_capability_ids") or (),
+core\agent.py:1417:            cancel=cancel, trace=trace, risk=risk, caps=caps,
+core\agent.py:1418:            confirmation_approved=True,
+core\agent.py:1422:    #  П1 §1.3 — voice-first confirmation watchdog
+core\agent.py:1425:    def _start_confirmation_watchdog(self, confirmation_id: str) -> None:
+core\agent.py:1429:        ``confirmation_timeout_sec`` — безопасный авто-reject (отказ).
+core\agent.py:1432:        timeout = float(getattr(self._config, "confirmation_timeout_sec", 30.0))
+core\agent.py:1438:                if confirmation_id not in self._pending_confirmations:
+core\agent.py:1441:            self.answer_confirmation(confirmation_id, approved=False)
+core\agent.py:1444:            old = self._confirmation_timers.pop(confirmation_id, None)
+core\agent.py:1446:                old.cancel()
+core\agent.py:1449:            self._confirmation_timers[confirmation_id] = timer
+core\agent.py:1457:                         cancel: threading.Event,
+core\agent.py:1465:        report = engine.run(goal, mission=mission, cancel=cancel)
+core\agent.py:1503:                          cancel: threading.Event, trace: List[str]) -> AgentOutcome:
+core\agent.py:1510:            if cancel.is_set():
+core\agent.py:1514:                    mode="cancelled",
+core\agent.py:1515:                    trace=trace + [f"compound cancelled before clause {index}"],
+core\agent.py:1517:            outcome = self._execute_core(part, mission=None, cancel=cancel)
+core\agent.py:1547:                       cancel: threading.Event,
+core\agent.py:1554:        if risk.needs_confirmation:
+core\agent.py:1589:        if exec_risk.needs_confirmation:
+core\agent.py:1596:            goal=goal, tool=cap.name, args=args, mission=mission, cancel=cancel,
+core\agent.py:1607:        cancel: threading.Event,
+core\agent.py:1611:        """Answer clear current-state questions from bounded local observation."""
+core\agent.py:1612:        if risk.needs_confirmation or cancel.is_set():
+core\agent.py:1747:            world_state = self._executive.world.context_for(goal)
+core\agent.py:1749:            world_state = {}
+core\agent.py:1785:            f"World/context state: {json.dumps({'attention': self._user_context, 'world': world_state}, ensure_ascii=False, default=str)[:4000]}\n"
+core\agent.py:1864:                           cancel: threading.Event,
+core\agent.py:1881:            cancel: флаг отмены.
+core\agent.py:1912:        world_state = {}
+core\agent.py:1914:            world_state = self._executive.world.context_for(goal)
+core\agent.py:1916:            log.debug("World state unavailable for brain context: %s", exc)
+core\agent.py:1919:            "world": world_state,
+core\agent.py:1936:                "контекст, память, world state и tools; backend не сочиняет реплики вместо тебя.\n"
+core\agent.py:1964:                f"World/context state:\n{world_block}\n"
+core\agent.py:2090:            if cancel.is_set():
+core\agent.py:2410:                                 cancel: threading.Event,
+core\agent.py:2418:                                 confirmation_approved: bool = False,
+core\agent.py:2437:            if cancel.is_set():
+core\agent.py:2438:                return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
+core\agent.py:2444:                cancel=cancel,
+core\agent.py:2450:                finalize_response=False,
+core\agent.py:2451:                confirmation_approved=confirmation_approved,
+core\agent.py:2453:            confirmation_approved = False
+core\agent.py:2469:                def _finalize_failed_step() -> AgentOutcome:
+core\agent.py:2472:                        text = self._finalize_tool_response(
+core\agent.py:2539:                    return _finalize_failed_step()
+core\agent.py:2548:                        goal, recovered_caps, mission, cancel,
+core\agent.py:2557:                    return _finalize_failed_step()
+core\agent.py:2564:                if (next_risk.needs_confirmation and not next_authority.allowed
+core\agent.py:2565:                        and not self._config.auto_confirm_high_risk):
+core\agent.py:2568:                        self._pending_confirmations[conf_id] = {
+core\agent.py:2576:                            "cancel": cancel,
+core\agent.py:2578:                            "loop_state": {
+core\agent.py:2586:                    self._start_confirmation_watchdog(conf_id)
+core\agent.py:2588:                        text=next_risk.confirmation_prompt(),
+core\agent.py:2590:                        needs_confirmation=True,
+core\agent.py:2591:                        confirmation_id=conf_id,
+core\agent.py:2594:                        mode="confirmation",
+core\agent.py:2624:                    goal, caps, mission, cancel,
+core\agent.py:2666:                text = self._finalize_tool_response(
+core\agent.py:2709:            if (next_risk.needs_confirmation and not next_authority.allowed
+core\agent.py:2710:                    and not self._config.auto_confirm_high_risk):
+core\agent.py:2711:                trace.append(f"next action requires confirmation: {next_risk.reasons}")
+core\agent.py:2714:                    self._pending_confirmations[conf_id] = {
+core\agent.py:2722:                        "cancel": cancel,
+core\agent.py:2724:                        "loop_state": {
+core\agent.py:2732:                self._start_confirmation_watchdog(conf_id)
+core\agent.py:2734:                    text=next_risk.confirmation_prompt(),
+core\agent.py:2736:                    needs_confirmation=True,
+core\agent.py:2737:                    confirmation_id=conf_id,
+core\agent.py:2740:                    mode="confirmation",
+core\agent.py:2764:                          mission: Optional[Mission], cancel: threading.Event,
+core\agent.py:2769:                          finalize_response: bool = True,
+core\agent.py:2770:                          confirmation_approved: bool = False) -> AgentOutcome:
+core\agent.py:2792:            state=None,
+core\agent.py:2794:                "confirmation_approved": bool(confirmation_approved),
+core\agent.py:2878:                text = self._finalize_tool_response(
+core\agent.py:2936:                    # tool lifecycle; the resumable state is carried by the
+core\agent.py:2956:                if gate_risk.needs_confirmation and not self._config.auto_confirm_high_risk:
+core\agent.py:2986:                    text=repair.human_message, verified=False, needs_confirmation=True,
+core\agent.py:3009:        if not finalize_response:
+core\agent.py:3020:        text = self._finalize_tool_response(
+core\agent.py:3061:    def _finalize_tool_response(self, *, goal: str, tool: str, args: Dict[str, Any],
+core\agent.py:3073:            world_state = self._executive.world.context_for(goal)
+core\agent.py:3075:            world_state = {}
+core\agent.py:3083:            f"World/context state: {json.dumps({'attention': self._user_context, 'world': world_state}, ensure_ascii=False, default=str)[:4000]}\n"
+core\agent.py:3141:    def _finalize_conversational_response(self, *, goal: str, draft: str,
+core\agent.py:3177:            log.error("DeepSeek conversational finalization failed: %s", exc)
+core\agent.py:3197:                             cancel: threading.Event, trace: List[str],
+core\agent.py:3207:        if cancel.is_set():
+core\agent.py:3208:            return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
+core\agent.py:3313:            # persona core and the confirmed user name.  It skips relationship
+core\agent.py:3317:            address = getattr(getattr(self._settings, "persona", None), "address", "сэр")
+core\agent.py:3386:            return self._personality.prompt_fragment(
+core\agent.py:3426:                        skip_confirmation: bool = False) -> AgentOutcome:
+core\agent.py:3438:        # yet, but the user still gets a real confirmation gate rather than a
+core\agent.py:3441:        if on_demand_risk.needs_confirmation and not skip_confirmation:
+core\agent.py:3443:            cancel = threading.Event()
+core\agent.py:3451:                "cancel": cancel,
+core\agent.py:3458:                self._pending_confirmations[conf_id] = pending
+core\agent.py:3462:                    "confirmation_id": conf_id,
+core\agent.py:3466:                    "prompt": on_demand_risk.confirmation_prompt(),
+core\agent.py:3468:            self._start_confirmation_watchdog(conf_id)
+core\agent.py:3470:                text=on_demand_risk.confirmation_prompt(),
+core\agent.py:3472:                needs_confirmation=True,
+core\agent.py:3473:                confirmation_id=conf_id,
+core\agent.py:3476:                mode="confirmation",
+core\agent.py:3482:        # against desired state; only verified trajectories are learned.
+core\agent.py:3496:                if capability_report.needs_confirmation:
+core\agent.py:3498:                        text="Сэр, для следующего системного изменения требуется подтверждение.",
+core\agent.py:3499:                        verified=False, needs_confirmation=True,
+core\agent.py:3500:                        risk=assess_risk(goal), mode="confirmation_required", trace=trace,
+core\agent.py:3504:                        text="Готово. Проверяйте, сэр.", verified=True,
+core\agent.py:3532:        # anything risky remains on the ordinary confirmation path below.
+core\agent.py:3533:        if not on_demand_risk.needs_confirmation:
+core\authority.py:138:    requires_confirmation: bool
+core\authority.py:229:        self._confirmations = 0
+core\authority.py:384:            if status in {"completed", "cancelled", "failed", "expired"}:
+core\authority.py:461:    def record_confirmation(self, confirmation_id: str, *, action: str) -> None:
+core\authority.py:462:        del confirmation_id, action
+core\authority.py:464:            self._confirmations += 1
+core\authority.py:471:                "confirmations": self._confirmations, "llm_calls": 0, "threads": 0,
+core\brain\config.py:1:"""Atomic provider metadata storage with deterministic hot reload."""
+core\brain\context.py:49:                mission: str = "", current_mind_state: str = "",
+core\brain\context.py:52:                capability_info: tuple[str, ...] = (), epistemic_state: tuple[str, ...] = (),
+core\brain\context.py:61:            ("current_mind_state", (current_mind_state,) if current_mind_state else ()),
+core\brain\context.py:66:            ("epistemic_state", epistemic_state),
+core\brain\fabric.py:196:                    raise ProviderUnavailable("stream interrupted after output") from exc
+core\brain\fabric.py:200:    def cancel(self, mission_id: str = "", stage: str = "") -> bool:
+core\brain\fabric.py:208:                changed = provider.cancel(f"{mission_id}:{stage}") or changed
+core\brain\health.py:27:        self._states: dict[str, _State] = {}
+core\brain\health.py:30:    def _state(self, key: str) -> _State:
+core\brain\health.py:31:        return self._states.setdefault(key, _State())
+core\brain\health.py:35:            state = self._state(key)
+core\brain\health.py:36:            state.status = HealthStatus.AVAILABLE
+core\brain\health.py:37:            state.latency_ms = float(latency_ms)
+core\brain\health.py:38:            state.consecutive_failures = 0
+core\brain\health.py:39:            state.recent_success = True
+core\brain\health.py:40:            state.last_error = ""
+core\brain\health.py:41:            state.opened_at = 0.0
+core\brain\health.py:46:            state = self._state(key)
+core\brain\health.py:47:            state.failures += 1
+core\brain\health.py:48:            state.consecutive_failures += 1
+core\brain\health.py:49:            state.timeouts += int(timeout)
+core\brain\health.py:50:            state.recent_success = False
+core\brain\health.py:51:            state.latency_ms = latency_ms
+core\brain\health.py:52:            state.last_error = str(error)[:240]
+core\brain\health.py:53:            if state.consecutive_failures >= self.failure_threshold:
+core\brain\health.py:54:                state.status = HealthStatus.UNHEALTHY
+core\brain\health.py:55:                state.opened_at = time.monotonic()
+core\brain\health.py:57:                state.status = HealthStatus.DEGRADED
+core\brain\health.py:61:            state = self._state(key)
+core\brain\health.py:62:            if state.status is not HealthStatus.UNHEALTHY:
+core\brain\health.py:63:                return state.status is not HealthStatus.OFFLINE
+core\brain\health.py:64:            if time.monotonic() - state.opened_at >= self.cooldown_seconds:
+core\brain\health.py:65:                state.status = HealthStatus.DEGRADED
+core\brain\health.py:71:            state = self._state(key)
+core\brain\health.py:72:            state.status = HealthStatus.DEGRADED
+core\brain\health.py:73:            state.opened_at = 0.0
+core\brain\health.py:77:            self._state(key).status = status
+core\brain\health.py:81:            state = self._state(key)
+core\brain\health.py:83:                status=state.status, latency_ms=state.latency_ms,
+core\brain\health.py:84:                failures=state.failures, timeouts=state.timeouts,
+core\brain\health.py:85:                recent_success=state.recent_success, last_error=state.last_error,
+core\brain\provider.py:27:    def cancel(self, request_id: str | None = None) -> bool: ...
+core\brain\providers.py:13:except ImportError:  # pragma: no cover - exercised only in minimal runtimes
+core\brain\providers.py:100:        self._cancelled = threading.Event()
+core\brain\providers.py:160:        self._cancelled.clear()
+core\brain\providers.py:185:        if self._cancelled.is_set():
+core\brain\providers.py:186:            raise ProviderUnavailable(f"provider {self.name} request cancelled")
+core\brain\providers.py:207:        self._cancelled.clear()
+core\brain\providers.py:259:        self._cancelled.clear()
+core\brain\providers.py:268:                    if self._cancelled.is_set():
+core\brain\providers.py:292:    def cancel(self, request_id: str | None = None) -> bool:
+core\brain\providers.py:293:        self._cancelled.set()
+core\brain\providers.py:319:    """Anthropic Messages API adapter with the shared cancellation/error contract."""
+core\brain\providers.py:399:        self._cancelled.clear()
+core\brain\providers.py:407:                    if self._cancelled.is_set():
+core\brain\providers.py:479:    def cancel(self, request_id: str | None = None) -> bool:
+core\brain\providers.py:480:        cancel = getattr(self.backend, "cancel", None)
+core\brain\providers.py:481:        return bool(cancel() if callable(cancel) else False)
+core\brain\secrets.py:80:    """User-scoped encrypted local storage backed by Windows DPAPI."""
+core\brain\secrets.py:89:            raise RuntimeError("DPAPI secret storage requires Windows")
+core\brain\secrets.py:108:            raise RuntimeError("DPAPI secret storage requires Windows")
+jarvis\index.html:14:          var s = JSON.parse(localStorage.getItem('jarvis.settings.v3') || '{}');
+jarvis\index.html:15:          if (s.theme) document.documentElement.setAttribute('data-theme', s.theme);
+jarvis\index.html:17:          document.documentElement.setAttribute('data-reduce-motion', rm ? 'true' : 'false');
+jarvis\index.html:19:            document.documentElement.style.setProperty('--transparency', String(s.transparency));
+core\actions\executor.py:1:"""Validated, bounded and cancellable tool execution."""
+core\actions\executor.py:29:_SYSTEM_TOOLS = frozenset({"system_status", "volume", "open_app", "close_app", "add_reminder", "list_reminders", "cancel_reminder", "current_time", "play_music", "screenshot", "clipboard_read", "clipboard_write", "key_press", "type_text", "screen_capture"})
+core\actions\executor.py:93:        if not getattr(tool, "supports_hard_cancellation", False) and not getattr(tool, "generated_by_shadow", False):
+core\actions\executor.py:128:        context.cancel_event.clear()
+core\actions\executor.py:146:            context.cancel_event.set()
+core\actions\executor.py:150:                                error=f"Таймаут выполнения: legacy-инструмент '{tool.name}' не поддерживает hard cancellation",
+persona\personality.json:8:  "address": "сэр"
+persona\system_prompt.py:22:from core.state import RetrievedContext
+persona\system_prompt.py:216:    if retrieved_context and retrieved_context.get("documents"):
+persona\system_prompt.py:217:        docs = retrieved_context["documents"]
+core\actions\filesystem.py:1:"""Файловая система (filesystem) — scoped user-document operations.
+core\actions\filesystem.py:4:(``settings.paths.documents_dir``). Доступ ко всей ФС НЕ предоставляется.
+core\actions\filesystem.py:52:    """Преобразует относительный путь в абсолютный внутри documents_dir.
+core\actions\filesystem.py:59:        Абсолютный Path внутри documents_dir.
+core\actions\filesystem.py:62:        ValueError: если путь пытается выйти за пределы documents_dir.
+core\actions\filesystem.py:64:    docs_dir = settings.paths.resolved("documents_dir")
+core\actions\filesystem.py:71:        raise ValueError(f"Путь '{path}' выходит за пределы documents_dir")
+core\actions\filesystem.py:77:    normalized = str(scope or "documents").strip().casefold()
+core\actions\filesystem.py:78:    if normalized == "documents":
+core\actions\filesystem.py:79:        root = settings.paths.resolved("documents_dir")
+core\actions\filesystem.py:89:def resolve_read_path(path: str, settings: Settings, scope: str = "documents") -> Path:
+core\actions\filesystem.py:90:    """Resolve a read-only path inside documents_dir or the user's Downloads."""
+core\actions\filesystem.py:94:        _scope_root("documents", settings),
+core\actions\filesystem.py:106:        dir_path: относительный путь внутри documents_dir (пусто = корень).
+core\actions\filesystem.py:122:                    files.append(str(p.relative_to(settings.paths.resolved("documents_dir"))))
+core\actions\filesystem.py:129:                    files.append(str(p.relative_to(settings.paths.resolved("documents_dir"))))
+core\actions\filesystem.py:136:              scope: str = "documents") -> str:
+core\actions\filesystem.py:140:        path: относительный путь внутри documents_dir.
+core\actions\filesystem.py:159:        from core.memory.document_rag import read_document
+core\actions\filesystem.py:160:        return read_document(target)
+core\actions\filesystem.py:171:        path: относительный путь внутри documents_dir.
+core\actions\filesystem.py:200:    """Copies a file inside documents_dir; destination parents are created."""
+core\actions\filesystem.py:216:    """Moves a file inside documents_dir; path traversal remains blocked."""
+core\actions\filesystem.py:238:    scope: str = "documents",
+core\actions\filesystem.py:246:        dir_path: директория для поиска (относительно documents_dir).
+core\actions\filesystem.py:312:            "Возвращает список файлов в указанной директории внутри documents_dir. "
+core\actions\filesystem.py:323:                    "description": "Относительный путь к директории (пусто = корень documents_dir).",
+core\actions\filesystem.py:369:            "Читает текстовый файл из documents_dir. Поддерживает UTF-8 и cp1251. "
+core\actions\filesystem.py:380:                    "description": "Относительный путь к файлу внутри documents_dir.",
+core\actions\filesystem.py:384:                    "enum": ["documents", "downloads"],
+core\actions\filesystem.py:385:                    "default": "documents",
+core\actions\filesystem.py:386:                    "description": "Область чтения: documents или папка Downloads пользователя.",
+core\actions\filesystem.py:396:            content = read_file(path, context.settings, scope=args.get("scope", "documents"))
+core\actions\filesystem.py:429:            "Создаёт или перезаписывает текстовый файл в documents_dir. "
+core\actions\filesystem.py:440:                    "description": "Относительный путь к файлу внутри documents_dir.",
+core\actions\filesystem.py:465:            "Ищет файлы в documents_dir или пользовательской Downloads по имени/содержимому. "
+core\actions\filesystem.py:481:                    "description": "Директория для поиска (относительно documents_dir, пусто = везде).",
+core\actions\filesystem.py:493:                    "enum": ["documents", "downloads"],
+core\actions\filesystem.py:494:                    "default": "documents",
+core\actions\filesystem.py:511:        scope = args.get("scope", "documents")
+core\actions\filesystem.py:544:    def description(self) -> str: return "Копирует файл внутри documents_dir с проверкой границ пути."
+core\actions\filesystem.py:558:    def description(self) -> str: return "Перемещает файл внутри documents_dir с проверкой границ пути."
+core\actions\filesystem.py:572:    def description(self) -> str: return "Рекурсивно перечисляет файлы внутри documents_dir для проверки состояния."
+core\capabilities.py:72:    def requires_confirmation(self) -> bool:
+core\capabilities.py:232:        description="Список файлов в каталоге внутри documents_dir.",
+core\capabilities.py:241:        description="Читает текстовые, PDF и Office-документы из documents_dir или Downloads.",
+core\capabilities.py:251:        description="Создаёт или перезаписывает текстовый файл в documents_dir.",
+core\capabilities.py:261:        description="Ищет файлы по имени/содержимому в documents_dir или Downloads и умеет выбрать последний.",
+core\capabilities.py:286:    "cancel_reminder": dict(
+core\capabilities.py:360:        success_check="конечный URL/DOM или post-action state фактически наблюдён",
+core\capabilities.py:489:            ("filesystem", {"file", "files", "document", "folder"}),
+core\capability_engine.py:4:existing primitive tools into a DAG, verifies desired state, performs targeted
+core\capability_engine.py:5:repair, and persists resumable mission state. It deliberately reuses
+core\capability_engine.py:60:    desired_state: dict[str, Any] = field(default_factory=dict)
+core\capability_engine.py:64:    average_duration: float = 0.0
+core\capability_engine.py:81:        previous_total = self.average_duration * self.times_used
+core\capability_engine.py:85:        self.average_duration = (previous_total + max(0.0, duration)) / self.times_used
+core\capability_engine.py:219:            return RiskDecision("confirm", False, f"{level} risk requires confirmation")
+core\capability_engine.py:221:            return RiskDecision("confirm", False, "system/network change requires confirmation")
+core\capability_engine.py:268:    state: str = "queued"
+core\capability_engine.py:270:    desired_state: dict[str, Any] = field(default_factory=dict)
+core\capability_engine.py:278:        self.state, self.updated_at = "paused", _utcnow()
+core\capability_engine.py:280:    def cancel(self) -> None:
+core\capability_engine.py:281:        self.state, self.updated_at = "cancelled", _utcnow()
+core\capability_engine.py:317:            if item is not None and item.state not in {"completed", "cancelled", "failed"}:
+core\capability_engine.py:325:    desired_state: dict[str, Any]
+core\capability_engine.py:354:    desired_state: dict[str, Any] = field(default_factory=dict)
+core\capability_engine.py:395:    def plan(self, goal: str, desired_state: Optional[dict[str, Any]] = None) -> ExecutionPlan:
+core\capability_engine.py:414:                goal, "learned", desired_state or learned.desired_state, steps, learned.id,
+core\capability_engine.py:418:        composed = self._compose(goal, desired_state or {})
+core\capability_engine.py:426:                goal, "acquired", desired_state or {},
+core\capability_engine.py:436:            goal=goal, acquisition="research", desired_state=desired_state or {},
+core\capability_engine.py:437:            requirements=["identify official documentation", "identify missing primitives"],
+core\capability_engine.py:449:                goal=goal, acquisition="composed", desired_state=desired,
+core\capability_engine.py:478:             "documentation": 3, "third_party": 9}
+core\capability_engine.py:486:            requirements=["determine current state", "derive desired state",
+core\capability_engine.py:489:            steps=["inspect current state", "select highest-reliability execution ladder",
+core\capability_engine.py:490:                   "checkpoint mutable state", "execute minimal delta", "observe result"],
+core\capability_engine.py:491:            verification=["compare observed state with desired state",
+core\capability_engine.py:493:            risks=["network acquisition requires confirmation",
+core\capability_engine.py:501:    state: str
+core\capability_engine.py:506:    needs_confirmation: bool = False
+core\capability_engine.py:528:                cancel: Optional[threading.Event] = None) -> ExecutionReport:
+core\capability_engine.py:531:        empty_verification = self.verifier.verify(plan.desired_state, {})
+core\capability_engine.py:535:        if decision.action == "confirm":
+core\capability_engine.py:537:                                   needs_confirmation=True,
+core\capability_engine.py:543:            if cancel is not None and cancel.is_set():
+core\capability_engine.py:544:                return ExecutionReport(False, "cancelled", results, empty_verification,
+core\capability_engine.py:551:                verification = self.verifier.verify(plan.desired_state, observed)
+core\capability_engine.py:556:        verification = self.verifier.verify(plan.desired_state, observed)
+core\capability_engine.py:565:                if cancel is not None and cancel.is_set():
+core\capability_engine.py:566:                    return ExecutionReport(False, "cancelled", results, verification,
+core\capability_engine.py:574:            verification = self.verifier.verify(plan.desired_state, observed)
+core\capability_engine.py:626:        if "organized_by_extension" in plan.desired_state:
+core\capability_engine.py:628:            docs = settings.paths.resolved("documents_dir") if settings is not None else None
+core\capability_engine.py:645:            success_criteria=[f"{key}={value!r}" for key, value in plan.desired_state.items()],
+core\capability_engine.py:647:            generalized_procedure=["observe current state", "apply minimal delta", "verify desired state"],
+core\capability_engine.py:649:            desired_state=dict(plan.desired_state),
+core\capability_engine.py:672:        desired_state: dict[str, Any],
+core\capability_engine.py:680:        The operator calls this boundary only after its desired-state diff is
+core\capability_engine.py:689:        safe_desired = _operator_safe_mapping(desired_state)
+core\capability_engine.py:699:            "observe current state and compute the minimal desired-state delta",
+core\capability_engine.py:701:            "observe again, repair only mismatches, and verify desired state",
+core\capability_engine.py:705:            description=f"Configure {safe_application} to a verified desired state",
+core\capability_engine.py:712:            desired_state=safe_desired,
+core\capability_engine.py:716:        capability.desired_state = safe_desired
+core\capability_engine.py:732:            important_observations=["independent desired-state comparison passed"],
+core\cognitive\addressing.py:87:    """Persists only repeatedly confirmed, name-like forms."""
+core\cognitive\addressing.py:95:    def confirm(self, form: str, *, similarity: float,
+core\cognitive\addressing.py:103:            entry["confirmed"] = int(entry.get("confirmed", 0)) + 1
+core\cognitive\addressing.py:104:            entry["last_confirmed"] = _now(now).isoformat()
+core\cognitive\addressing.py:113:            if isinstance(entry, dict) and int(entry.get("confirmed", 0)) >= 3
+core\cognitive\addressing.py:134:        self._last_confirmed: datetime | None = None
+core\cognitive\addressing.py:173:                evidence.append("learned_confirmed_form")
+core\cognitive\addressing.py:206:            conversational_context and self._last_confirmed is not None
+core\cognitive\addressing.py:207:            and current - self._last_confirmed <= self.conversation_window
+core\cognitive\addressing.py:210:            return AddressMatch(True, 0.78, ("recent_address_state",), "", utterance)
+core\cognitive\addressing.py:217:            evidence.append("recent_address_state")
+core\cognitive\addressing.py:225:    def confirm(self, match: AddressMatch, *, accepted: bool,
+core\cognitive\addressing.py:229:        self._last_confirmed = _now(now)
+core\cognitive\addressing.py:234:                self.store.confirm(match.candidate, similarity=similarity, now=now)
+core\cognitive_kernel\capabilities.py:18:    confirmation_policy: str = "policy"
+core\actions\reminders.py:113:    def cancel_reminder(self, reminder_id: str) -> bool:
+core\actions\reminders.py:122:            rem.timer.cancel()
+core\actions\reminders.py:132:                rem.timer.cancel()
+core\actions\reminders.py:307:        return "cancel_reminder"
+core\actions\reminders.py:332:            if mission is not None and mission.metadata.get("durable_kind") == "reminder" and runtime.cancel(reminder_id):
+core\actions\reminders.py:344:        if manager.cancel_reminder(reminder_id):
+core\cognitive\continuity.py:89:    def resolve(self, text: str, state: CurrentMindState,
+core\cognitive\continuity.py:92:        if correction and state.current_goal and (
+core\cognitive\continuity.py:93:            state.last_verified_result
+core\cognitive\continuity.py:94:            or state.mission_state in {"completed", "verifying", "verification_failed"}
+core\cognitive\continuity.py:98:                state.current_goal,
+core\cognitive\continuity.py:99:                state.active_mission_id,
+core\cognitive\continuity.py:146:        if state.current_goal and state.mission_state not in {
+core\cognitive\continuity.py:147:            "completed", "cancelled", "failed", "idle",
+core\cognitive\continuity.py:150:                action, state.current_goal, state.active_mission_id,
+core\cognitive\continuity.py:151:                confidence=0.72, evidence=("current mind state",),
+core\intelligence\skills.py:67:            description="Explain a local document or screenshot with bounded evidence.",
+core\intelligence\skills.py:70:            verification=["citation_present", "source_exists"],
+core\intelligence\skills.py:75:            description="Install from a trusted source and reach a verified desired state.",
+core\intelligence\skills.py:79:            verification=["publisher_verified", "launch_observed", "desired_state_verified"],
+core\intelligence\skills.py:88:            verification=["source_citations", "resume_task_on_network_failure"],
+core\intelligence\intake.py:103:            kind = "document"
+core\intelligence\contracts.py:26:    """A normalized user goal.  It is safe to serialize into mission state."""
+core\intelligence\contracts.py:58:    expected_state: dict[str, Any] = field(default_factory=dict)
+core\intelligence\contracts.py:59:    observed_state: dict[str, Any] = field(default_factory=dict)
+core\cognitive_kernel\kernel.py:43:        self._cancel: dict[str, threading.Event] = {}
+core\cognitive_kernel\kernel.py:100:            desired_state={"outcome": contract.desired_outcome},
+core\cognitive_kernel\kernel.py:117:        for key in ("desired_state", "observed_state", "next_action", "rollback_plan", "error"):
+core\cognitive_kernel\kernel.py:127:        if mission.status in {"cancelled", "verified"}:
+core\cognitive_kernel\kernel.py:130:        event = self._cancel.setdefault(mission_id, threading.Event())
+core\cognitive_kernel\kernel.py:150:            result = executor(mission=mission, cancel=event, **kwargs)
+core\cognitive_kernel\kernel.py:157:        except Exception as exc:  # pragma: no cover - defensive boundary
+core\cognitive_kernel\kernel.py:162:        # verified state.
+core\cognitive_kernel\kernel.py:167:            mission.observed_state = dict(outcome.verified_fields)
+core\cognitive_kernel\kernel.py:172:            expected_state=dict(mission.desired_state),
+core\cognitive_kernel\kernel.py:173:            observed_state=dict(outcome.verified_fields),
+core\cognitive_kernel\kernel.py:188:    def cancel(self, mission_id: str, reason: str = "user_cancelled") -> CancellationResult:
+core\cognitive_kernel\kernel.py:190:        event = self._cancel.setdefault(mission_id, threading.Event())
+core\cognitive_kernel\kernel.py:192:        if mission.status not in {"verified", "verification_failed", "cancelled"}:
+core\cognitive_kernel\kernel.py:193:            self.transition(mission_id, "cancelled", next_action="", error=reason)
+core\cognitive_kernel\kernel.py:204:        cancel = self._cancel.setdefault(mission_id, threading.Event())
+core\cognitive_kernel\kernel.py:209:                raw = executor(mission=mission, cancel=cancel, rollback=True)
+core\cognitive_kernel\kernel.py:211:                raw = executor(mission=mission, cancel=cancel)
+core\cognitive_kernel\kernel.py:228:            expected_state=dict(mission.rollback_plan.get("expected_state", {})),
+core\cognitive_kernel\kernel.py:229:            observed_state=dict(outcome.verified_fields),
+core\cognitive\models.py:1:"""Typed, inspectable state for the ATLAS cognitive coordinator.
+core\cognitive\models.py:26:    mission_state: str = "idle"
+core\cognitive\models.py:27:    attention_state: str = "available"
+core\cognitive\models.py:44:        """Return the explicit public state contract (never private reasoning)."""
+core\cognitive_kernel\models.py:77:    expected_state: dict[str, Any] = field(default_factory=dict)
+core\cognitive_kernel\models.py:78:    observed_state: dict[str, Any] = field(default_factory=dict)
+core\cognitive_kernel\models.py:82:    state_hash: str = ""
+core\cognitive_kernel\models.py:89:        value["expected_state"] = _safe_mapping(self.expected_state)
+core\cognitive_kernel\models.py:90:        value["observed_state"] = _safe_mapping(self.observed_state)
+core\cognitive_kernel\models.py:104:    desired_state: dict[str, Any] = field(default_factory=dict)
+core\cognitive_kernel\models.py:105:    observed_state: dict[str, Any] = field(default_factory=dict)
+core\cognitive_kernel\models.py:117:        value["desired_state"] = _safe_mapping(self.desired_state)
+core\cognitive_kernel\models.py:118:        value["observed_state"] = _safe_mapping(self.observed_state)
+core\cognitive_kernel\models.py:153:        """Additive compatibility alias; success still means verified state."""
+core\cognitive_kernel\models.py:166:    cancelled: bool
+core\cognitive\orchestrator.py:16:from core.cognitive.state import MindStateStore
+core\cognitive\orchestrator.py:52:    """Coordinates state, memory, planning, risk and verified outcomes.
+core\cognitive\orchestrator.py:68:        self.store = MindStateStore(root / "state")
+core\cognitive\orchestrator.py:100:        self.state = self.store.reconstruct(
+core\cognitive\orchestrator.py:103:        self.sync_epistemic_state()
+core\cognitive\orchestrator.py:116:            if signal not in self.state.uncertainties:
+core\cognitive\orchestrator.py:117:                self.state.uncertainties.append(signal)
+core\cognitive\orchestrator.py:119:        self.store.save(self.state)
+core\cognitive\orchestrator.py:130:            raw, conversational_context=self.state.interaction_mode != "idle",
+core\cognitive\orchestrator.py:137:            self.addressing.confirm(match, accepted=True)
+core\cognitive\orchestrator.py:144:                confidence=1.0, evidence=(self.state.active_epistemic_key,),
+core\cognitive\orchestrator.py:147:        continuation = self.continuity.resolve(command, self.state)
+core\cognitive\orchestrator.py:149:            self.state.pending_user_question = continuation.question
+core\cognitive\orchestrator.py:150:            self.store.save(self.state)
+core\cognitive\orchestrator.py:157:            self.state.current_goal = continuation.goal
+core\cognitive\orchestrator.py:158:            self.state.active_task = frame.active_task if frame else self.state.active_task
+core\cognitive\orchestrator.py:159:            self.state.mission_state = "executing" if continuation.action != "status" else "paused"
+core\cognitive\orchestrator.py:160:            self.state.pending_user_question = ""
+core\cognitive\orchestrator.py:161:            self.state.confidence = continuation.confidence
+core\cognitive\orchestrator.py:163:                self.state.last_verified_result = ""
+core\cognitive\orchestrator.py:164:                self.state.pending_verification = ["user-reported outcome mismatch"]
+core\cognitive\orchestrator.py:165:                self.state.mission_state = "repairing"
+core\cognitive\orchestrator.py:166:            self.store.save(self.state)
+core\cognitive\orchestrator.py:172:        self_answer = self.self_model.answer(command, self.state)
+core\cognitive\orchestrator.py:181:            self.state.interaction_mode = "conversation"
+core\cognitive\orchestrator.py:182:            self.state.recalled_memory_refs = list(memory_refs)
+core\cognitive\orchestrator.py:183:            self.store.save(self.state)
+core\cognitive\orchestrator.py:188:        self.state.current_goal = command
+core\cognitive\orchestrator.py:189:        self.state.active_task = "select capability"
+core\cognitive\orchestrator.py:190:        self.state.mission_state = "planning"
+core\cognitive\orchestrator.py:191:        self.state.interaction_mode = "work"
+core\cognitive\orchestrator.py:192:        self.state.recalled_memory_refs = list(memory_refs)
+core\cognitive\orchestrator.py:193:        self.state.confidence = max(0.7, match.confidence)
+core\cognitive\orchestrator.py:196:            self.store.save(self.state)
+core\cognitive\orchestrator.py:197:            return CognitiveTurn(command, True, "delegate", command, confidence=self.state.confidence,
+core\cognitive\orchestrator.py:200:            self.state.active_task = "research capability"
+core\cognitive\orchestrator.py:201:            self.state.mission_state = "researching"
+core\cognitive\orchestrator.py:202:            self.store.save(self.state)
+core\cognitive\orchestrator.py:204:                                 self.state.confidence, memory_refs=memory_refs, plan=plan)
+core\cognitive\orchestrator.py:209:        if getattr(decision, "action", "") == "confirm":
+core\cognitive\orchestrator.py:210:            self.state.mission_state = "waiting_for_user"
+core\cognitive\orchestrator.py:211:            self.state.pending_user_question = "Подтвердите выполнение операции."
+core\cognitive\orchestrator.py:212:            self.store.save(self.state)
+core\cognitive\orchestrator.py:213:            return CognitiveTurn(command, True, "confirm", command,
+core\cognitive\orchestrator.py:218:        self.state.active_task = "execute plan"
+core\cognitive\orchestrator.py:219:        self.state.mission_state = "executing"
+core\cognitive\orchestrator.py:220:        self.store.save(self.state)
+core\cognitive\orchestrator.py:236:        """Run bounded correction and update durable state only from observation."""
+core\cognitive\orchestrator.py:237:        self.state.current_goal = goal
+core\cognitive\orchestrator.py:238:        self.state.active_task = "expect, act, observe and compare"
+core\cognitive\orchestrator.py:239:        self.state.mission_state = "executing"
+core\cognitive\orchestrator.py:245:        if report.needs_confirmation:
+core\cognitive\orchestrator.py:246:            self.state.mission_state = "waiting_for_user"
+core\cognitive\orchestrator.py:248:                self.state, result="", verified=False, pending=["user confirmation"],
+core\cognitive\orchestrator.py:252:            result = f"desired state verified by {report.selected_strategy}"
+core\cognitive\orchestrator.py:253:            self.state.mission_state = "completed"
+core\cognitive\orchestrator.py:255:                self.state, result=result, verified=True,
+core\cognitive\orchestrator.py:263:        self.state.mission_state = "researching"
+core\cognitive\orchestrator.py:264:        pending = list(getattr(expectation, "expected_effect", {}).keys()) or ["desired state"]
+core\cognitive\orchestrator.py:266:            self.state, result=report.state, verified=False, pending=pending,
+core\cognitive\orchestrator.py:279:        if getattr(report, "needs_confirmation", False):
+core\cognitive\orchestrator.py:280:            self.state.mission_state = "waiting_for_user"
+core\cognitive\orchestrator.py:282:                self.state, result="", verified=False,
+core\cognitive\orchestrator.py:283:                pending=["user confirmation"],
+core\cognitive\orchestrator.py:289:            result = f"desired state verified: {sorted(observed)}"
+core\cognitive\orchestrator.py:291:            self.state.mission_state = "completed"
+core\cognitive\orchestrator.py:293:                self.state, result=result, verified=True, evidence=evidence,
+core\cognitive\orchestrator.py:296:                                        evidence_ref=(evidence[0] if evidence else "desired_state"))
+core\cognitive\orchestrator.py:297:            if self.state.active_mission_id:
+core\cognitive\orchestrator.py:298:                self.goal_stack.remove(self.state.active_mission_id)
+core\cognitive\orchestrator.py:302:        self.state.mission_state = "verifying"
+core\cognitive\orchestrator.py:303:        self.store.observe_result(self.state, result=str(getattr(report, "state", "")),
+core\cognitive\orchestrator.py:306:                                    evidence_ref="desired_state_mismatch")
+core\cognitive\orchestrator.py:312:        self.state.current_goal = goal or self.state.current_goal
+core\cognitive\orchestrator.py:313:        self.state.active_mission_id = mission_id or self.state.active_mission_id
+core\cognitive\orchestrator.py:314:        self.state.mission_state = "completed" if verified else "verifying"
+core\cognitive\orchestrator.py:316:            self.state, result=result, verified=verified, pending=pending or [],
+core\cognitive\orchestrator.py:329:        self.state.active_epistemic_key = key
+core\cognitive\orchestrator.py:330:        self.sync_epistemic_state(now=now)
+core\cognitive\orchestrator.py:331:        self.store.save(self.state)
+core\cognitive\orchestrator.py:334:    def sync_epistemic_state(self, *, now: datetime | None = None) -> None:
+core\cognitive\orchestrator.py:336:        self.state.known = summary["known"]
+core\cognitive\orchestrator.py:337:        self.state.unknown = summary["unknown"]
+core\cognitive\orchestrator.py:338:        self.state.uncertain = summary["uncertain"]
+core\cognitive\orchestrator.py:339:        self.state.conflicted = summary["conflicted"]
+core\cognitive\orchestrator.py:340:        self.state.needs_verification = summary["needs_verification"]
+core\cognitive\orchestrator.py:343:        if not self.state.current_goal:
+core\cognitive\orchestrator.py:345:        goal_id = self.state.active_mission_id or f"goal-{abs(hash(self.state.current_goal))}"
+core\cognitive\orchestrator.py:346:        frame = GoalFrame(goal_id, self.state.current_goal, self.state.active_task)
+core\cognitive\orchestrator.py:348:        self.state.current_goal = ""
+core\cognitive\orchestrator.py:349:        self.state.active_task = ""
+core\cognitive\orchestrator.py:350:        self.state.mission_state = "suspended"
+core\cognitive\orchestrator.py:351:        self.store.save(self.state)
+core\cognitive\orchestrator.py:359:        key = self.state.active_epistemic_key
+core\cognitive\orchestrator.py:373:            key=key, claim=f"Desired state for task: {safe_goal}", value=verified,
+core\cognitive\orchestrator.py:385:        self.state.active_epistemic_key = belief.key
+core\cognitive\orchestrator.py:386:        self.sync_epistemic_state(now=now)
+core\cognitive\orchestrator.py:387:        self.store.save(self.state)
+core\cognitive\self_model.py:69:    def answer(self, question: str, state: CurrentMindState) -> SelfKnowledgeAnswer:
+core\cognitive\self_model.py:91:            if state.last_verified_result:
+core\cognitive\self_model.py:92:                subject = f" «{state.current_goal}»" if state.current_goal else ""
+core\cognitive\self_model.py:95:                    ("mind_state:last_verified_result",),
+core\cognitive\self_model.py:98:                                       ("mind_state:no_verified_result",))
+core\cognitive\self_model.py:100:            if not state.current_goal:
+core\cognitive\self_model.py:101:                return SelfKnowledgeAnswer(True, "Сейчас активной задачи нет.", ("mind_state:idle",))
+core\cognitive\self_model.py:102:            detail = f" Сейчас: {state.active_task}." if state.active_task else ""
+core\cognitive\self_model.py:104:                True, f"Работаю над задачей: {state.current_goal}.{detail}",
+core\cognitive\self_model.py:105:                (f"mind_state:{state.mission_state}",),
+core\cognitive\__init__.py:18:from core.cognitive.state import MindStateStore
+core\cognitive\state.py:1:"""Selective persistence and restart reconstruction for cognitive state."""
+core\cognitive\state.py:17:    "recalled_memory_refs", "mission_state", "uncertainties",
+core\cognitive\state.py:42:    """Stores only the minimum state required to continue verified work."""
+core\cognitive\state.py:46:        self.path = self.directory / "current_mind_state.json"
+core\cognitive\state.py:49:    def save(self, state: CurrentMindState) -> CurrentMindState:
+core\cognitive\state.py:50:        state.updated_at = utcnow()
+core\cognitive\state.py:51:        payload = {name: _clean(getattr(state, name)) for name in _PERSISTED_FIELDS}
+core\cognitive\state.py:53:        return state
+core\cognitive\state.py:69:        state = self.load()
+core\cognitive\state.py:78:            state.current_goal = getattr(mission, "goal", "") or state.current_goal
+core\cognitive\state.py:79:            state.active_task = getattr(mission, "current_step", "") or ""
+core\cognitive\state.py:80:            state.active_mission_id = getattr(mission, "task_id", "") or ""
+core\cognitive\state.py:81:            state.mission_state = getattr(status, "value", str(status))
+core\cognitive\state.py:84:                state.last_verified_result = _clean(str(mission.result))
+core\cognitive\state.py:90:            state.current_app = getattr(current, "active_application", "") or ""
+core\cognitive\state.py:91:            state.attention_state = "busy" if getattr(current, "user_busy", False) else "available"
+core\cognitive\state.py:97:            if not candidates and not state.current_goal and living_goal and living_confidence >= 0.7:
+core\cognitive\state.py:98:                state.current_goal = living_goal
+core\cognitive\state.py:99:                state.mission_state = "context_reconstructed"
+core\cognitive\state.py:100:                state.confidence = round(max(0.0, min(1.0, living_confidence)), 3)
+core\cognitive\state.py:101:                state.relevant_context_refs = ["living:goal"]
+core\cognitive\state.py:102:        return state
+core\cognitive\state.py:104:    def observe_result(self, state: CurrentMindState, *, result: str,
+core\cognitive\state.py:108:            state.pending_verification = list(pending)
+core\cognitive\state.py:109:            self.save(state)
+core\cognitive\state.py:110:            return state
+core\cognitive\state.py:112:        state.last_verified_result = clean_result
+core\cognitive\state.py:113:        state.pending_verification = []
+core\cognitive\state.py:115:            goal=_clean(state.current_goal), result=clean_result,
+core\cognitive\state.py:118:        self.save(state)
+core\cognitive\state.py:119:        return state
+core\living\models.py:61:    jarvis_should_interrupt: bool = False
+core\executive\commands.py:38:                args: Optional[dict[str, Any]] = None, desired_state: Optional[dict[str, Any]] = None,
+core\executive\commands.py:43:        expected = dict(desired_state or {})
+core\executive\commands.py:51:                            expected_state=expected, reversible=mode != ActionMode.ROLLBACK),
+core\executive\commands.py:53:                CommandStep(CommandPrimitive.VERIFY, "сопоставить desired state с observed state",
+core\executive\commands.py:54:                            expected_state=expected),
+core\executive\commands.py:60:        return CommandPlan(goal=goal, steps=steps, mode=mode, desired_state=expected,
+core\memory\document_rag.py:3:Сканирует ``settings.paths.documents_dir``, режет текст на чанки и
+core\memory\document_rag.py:4:индексирует в отдельную коллекцию ``documents`` (эмбеддинги — общий
+core\memory\document_rag.py:21:__all__ = ["DocumentRAG", "read_pdf", "read_text_file", "read_document", "chunk_text", "DOCUMENTS_COLLECTION"]
+core\memory\document_rag.py:29:DOCUMENTS_COLLECTION = "documents"
+core\memory\document_rag.py:70:def read_document(path: Path) -> str:
+core\memory\document_rag.py:82:        return "\n".join(p.text for p in Document(str(path)).paragraphs if p.text.strip())
+core\memory\document_rag.py:163:            settings: конфигурация (берётся ``documents_dir``).
+core\memory\document_rag.py:192:            documents_dir = self._settings.paths.resolved("documents_dir")
+core\memory\document_rag.py:193:            documents_dir.mkdir(parents=True, exist_ok=True)
+core\memory\document_rag.py:197:                path=str(documents_dir / ".chroma"),
+core\memory\document_rag.py:205:            log.info("RAG-документы инициализированы: %s", documents_dir)
+core\memory\document_rag.py:241:            text = read_document(path)
+core\memory\document_rag.py:268:            self._collection.add(documents=chunks, ids=ids, metadatas=metadatas)
+core\memory\document_rag.py:278:        """Сканирует documents_dir и индексирует файлы, ещё не проиндексированные.
+core\memory\document_rag.py:286:        documents_dir = self._settings.paths.resolved("documents_dir")
+core\memory\document_rag.py:288:            p for p in documents_dir.iterdir()
+core\memory\document_rag.py:318:    def search_documents(self, query: str, top_k: int = 3) -> List[str]:
+core\memory\document_rag.py:342:        documents = (results or {}).get("documents") or [[]]
+core\memory\document_rag.py:347:        return [wrap_untrusted(str(doc), source="RAG") for doc in documents[0] if doc]
+core\memory\budget.py:19:from core.state import Message
+core\living\monitor.py:17:    """Collects only foreground-window metadata and coarse activity state.
+core\living\monitor.py:20:    Optional probes may contribute already-structured browser/application state.
+core\llm\breaker.py:52:_states: Dict[str, _BreakerState] = {}
+core\llm\breaker.py:55:def _state_for(provider: str) -> _BreakerState:
+core\llm\breaker.py:56:    state = _states.get(provider)
+core\llm\breaker.py:57:    if state is None:
+core\llm\breaker.py:58:        state = _BreakerState()
+core\llm\breaker.py:59:        _states[provider] = state
+core\llm\breaker.py:60:    return state
+core\llm\breaker.py:74:        state = _states.get(name)
+core\llm\breaker.py:75:        if state is None or state.consecutive_failures < FAILURE_THRESHOLD:
+core\llm\breaker.py:77:        if time.monotonic() - state.opened_at >= COOLDOWN_SEC:
+core\llm\breaker.py:89:        state = _state_for(name)
+core\llm\breaker.py:90:        if state.consecutive_failures:
+core\llm\breaker.py:92:        state.consecutive_failures = 0
+core\llm\breaker.py:93:        state.opened_at = 0.0
+core\llm\breaker.py:102:        state = _state_for(name)
+core\llm\breaker.py:103:        state.consecutive_failures += 1
+core\llm\breaker.py:104:        if state.consecutive_failures >= FAILURE_THRESHOLD:
+core\llm\breaker.py:105:            state.opened_at = time.monotonic()
+core\llm\breaker.py:108:                name, COOLDOWN_SEC, state.consecutive_failures,
+core\llm\breaker.py:116:        state = _states.get(name)
+core\llm\breaker.py:117:        if state is None:
+core\llm\breaker.py:121:            "consecutive_failures": state.consecutive_failures,
+core\llm\breaker.py:129:        _states.clear()
+core\memory\embedder.py:3:Зачем отдельный класс: long_term, document_rag и knowledge_graph должны
+core\living\proactive.py:55:    seconds_since_interruption: float | None = None
+core\living\proactive.py:61:    can_interrupt: bool
+core\living\proactive.py:94:    """Scores interruption availability without inferring mood or emotion."""
+core\living\proactive.py:110:        if snapshot.seconds_since_interruption is not None:
+core\living\proactive.py:111:            recency = math.exp(-max(0.0, snapshot.seconds_since_interruption) / 900)
+core\living\proactive.py:114:                reasons.append("recent_interruption")
+core\living\proactive.py:278:        if candidate.danger and candidate.urgency >= 0.8 and attention_result.can_interrupt:
+core\living\proactive.py:280:                ProactiveAction.WARN, f"Сэр, обнаружен значимый риск: {candidate.opportunity}.",
+core\living\proactive.py:284:            if not attention_result.can_interrupt and candidate.can_prepare and risk == 0:
+core\living\proactive.py:287:            if not attention_result.can_interrupt:
+core\living\proactive.py:291:            return self._decision(ProactiveAction.ASK, f"Сэр, уточните {missing}?", score,
+core\living\proactive.py:296:        if not attention_result.can_interrupt:
+core\living\proactive.py:318:            f"Сэр, эта последовательность повторяется. Автоматизировать {candidate.topic}?",
+core\executive\goals.py:29:    def add(self, title: str, *, desired_state: Optional[dict[str, Any]] = None,
+core\executive\goals.py:36:        node = GoalNode(title=title, desired_state=dict(desired_state or {}),
+core\executive\goals.py:52:                    if kwargs.get("desired_state"):
+core\executive\goals.py:53:                        node.desired_state.update(kwargs["desired_state"])
+core\executive\goals.py:108:        expected = node.desired_state if node else {}
+core\metacognition\correction.py:32:    state: str
+core\metacognition\correction.py:39:    needs_confirmation: bool = False
+core\metacognition\correction.py:57:            if getattr(decision, "action", "") == "confirm":
+core\metacognition\correction.py:58:                return CorrectionReport(False, "waiting_for_user", needs_confirmation=True)
+core\metacognition\correction.py:105:                report.state = "completed"
+core\metacognition\correction.py:136:        report.state = "research_required"
+core\metacognition\correction.py:137:        self._audit("verification", {"verified": False, "state": report.state})
+core\metacognition\engine.py:105:                if getattr(decision, "action", "") == "confirm":
+core\metacognition\engine.py:138:        if belief.freshness.state(self._now(now)) is FreshnessState.STALE:
+core\metacognition\engine.py:180:                    or belief.freshness.state(moment) is FreshnessState.STALE):
+core\metacognition\engine.py:184:    def epistemic_state(self, *, active_key: str = "") -> EpistemicState:
+core\metacognition\engine.py:288:            and belief.freshness.state(moment) is not FreshnessState.STALE
+core\living\resources.py:161:        average_ratio = item["duration_ratio_total"] / runs
+core\living\resources.py:162:        slowness = min(1.0, max(0.0, average_ratio - 1) / 3)
+core\living\resources.py:168:            f"duration_ratio={average_ratio:.3f}",
+core\memory\long_term.py:73:            embedder: общий эмбеддер проекта (тот же, что у document_rag).
+core\memory\long_term.py:167:                documents=[safe_text],
+core\memory\long_term.py:207:        documents = (results or {}).get("documents") or [[]]
+core\memory\long_term.py:209:        values = documents[0] if documents else []
+core\memory\long_term.py:286:            all_docs = self._collection.get(include=["documents"])
+core\memory\long_term.py:288:            docs = all_docs.get("documents") or []
+jarvis\README.md:30:| TitleBar | Drag region, traffic lights, J.A.R.V.I.S. wordmark, state dot |
+jarvis\README.md:33:| Command Input | Frosted field, drag-drop files, Shift+Enter newline |
+jarvis\README.md:76:│   ├── state/
+jarvis\README.md:110:  | 'error'       // Error state
+jarvis\README.md:126:   async fn backend_interrupt() { ... }
+jarvis\README.md:139:   - Exposes `sendMessage()`, `interrupt()`, `requestVitals()`
+jarvis\README.md:176:- Focus visible states
+core\memory\profile.py:209:    # A confirmed name is relationship identity, not topical memory; keeping
+core\memory\__init__.py:15:from core.memory.document_rag import DocumentRAG, chunk_text, read_pdf, read_text_file
+core\memory\short_term.py:16:from core.state import JarvisState, Message, Role
+core\memory\short_term.py:85:    def to_state(self, state: JarvisState) -> None:
+core\memory\short_term.py:89:            state: состояние витка (мутируется на месте).
+core\memory\short_term.py:91:        state["short_memory"] = self.get_recent()
+core\memory\secret_filter.py:32:_RE_EVENT = re.compile(r"(?i)\b(event_|mission-|task_id|task_started|confirmation_required)\b")
+core\memory\secret_filter.py:73:        if not any(w in text.lower() for w in ("сэр", "jarvis", "готов", "принят")):
+core\memory\retrieval.py:4:заполняет ``state["retrieved_context"]`` из каждого слоя. Главное правило:
+core\memory\retrieval.py:17:from core.memory.document_rag import DocumentRAG
+core\memory\retrieval.py:22:from core.state import JarvisState, RetrievedContext
+core\memory\retrieval.py:39:        self._rag_top_k = getattr(settings.limits, "rag_top_k", 3) or 3
+core\memory\retrieval.py:46:        self._document_rag: Optional[DocumentRAG] = None
+core\memory\retrieval.py:70:                self._document_rag = DocumentRAG(self._settings, self._embedder)
+core\memory\retrieval.py:73:                self._document_rag = None
+core\memory\retrieval.py:89:    def retrieve(self, state: JarvisState) -> JarvisState:
+core\memory\retrieval.py:90:        """Заполняет ``state["retrieved_context"]`` из всех доступных слоёв.
+core\memory\retrieval.py:96:            state: состояние витка (мутируется: дописывается ``retrieved_context``).
+core\memory\retrieval.py:99:            Тот же объект ``state``.
+core\memory\retrieval.py:102:        query = (state.get("user_input") or "").strip()
+core\memory\retrieval.py:107:            "documents": [],
+core\memory\retrieval.py:120:                context["long_term"] = self._long_term.search(query, self._rag_top_k)
+core\memory\retrieval.py:125:        if self._document_rag is not None and query:
+core\memory\retrieval.py:127:                context["documents"] = self._document_rag.search_documents(query, self._rag_top_k)
+core\memory\retrieval.py:143:        state["retrieved_context"] = context
+core\memory\retrieval.py:145:            "Контекст собран: profile=%d симв., long_term=%d, documents=%d, graph=%d",
+core\memory\retrieval.py:147:            len(context["documents"]), len(context["graph"]),
+core\memory\retrieval.py:149:        return state
+core\memory\retrieval.py:201:    def document_rag(self) -> Optional[DocumentRAG]:
+core\memory\retrieval.py:203:        return self._document_rag
+core\living\service.py:152:        active = status not in {"completed", "failed", "cancelled"}
+core\living\service.py:262:        def runner(mission: Mission, cancel: threading.Event) -> str:
+core\living\service.py:265:                while mission.status is MissionStatus.PAUSED and not cancel.is_set():
+core\living\service.py:267:                if cancel.is_set():
+core\living\service.py:268:                    raise RuntimeError("preparation cancelled")
+core\living\service.py:290:                "foreground_interruption": False,
+core\living\service.py:297:                          desired_state: dict[str, Any], checkpoint: Callable[[], Any],
+core\living\service.py:305:                decision.action.value, False, False, {}, dict(desired_state), False,
+core\living\service.py:320:                decision.action.value, True, False, {}, dict(desired_state), rolled_back,
+core\living\service.py:323:        verification = self.verifier.verify(desired_state, observed)
+core\living\service.py:350:            observed = result.get("observation") or result.get("observed_state")
+core\living\service.py:358:                    expected=dict(result.get("desired_state") or {}),
+core\metacognition\freshness.py:13:        (("file.exists", "file.state"), 30),
+core\metacognition\freshness.py:14:        (("website", "site.state"), 300),
+core\metacognition\models.py:79:    def state(self, now: datetime | None = None) -> FreshnessState:
+core\metacognition\models.py:95:        }[self.state(now)]
+core\actions\system.py:31:    "get_machine_state",
+core\actions\system.py:32:    "get_storage_state",
+core\actions\system.py:97:                state = "включён" if not current_mute else "выключен"
+core\actions\system.py:102:                    output=f"Mute {state}.",
+core\actions\system.py:173:def get_machine_state() -> DomainObservation:
+core\actions\system.py:177:def get_storage_state() -> DomainObservation:
+core\actions\system.py:178:    return _WORLD_OBSERVER.observe("storage")
+core\actions\system.py:182:    observation = get_storage_state()
+core\actions\system.py:205:    machine = get_machine_state()
+core\actions\system.py:206:    storage = get_storage_state()
+core\actions\system.py:208:        "observed_at": max(machine.observed_at, storage.observed_at).isoformat(),
+core\actions\system.py:209:        "source": [machine.source, storage.source],
+core\actions\system.py:212:        "evidence": [*machine.evidence, *storage.evidence],
+core\actions\system.py:213:        "errors": [item.error for item in (machine, storage) if item.error],
+core\actions\system.py:231:    if storage.ok:
+core\actions\system.py:232:        status["volumes"] = storage.data["volumes"]
+core\executive\learning.py:90:    def rehearse(self, plan: CommandPlan, current_state: Optional[dict[str, Any]] = None) -> RehearsalReport:
+core\executive\learning.py:95:        state = dict(current_state or {})
+core\executive\learning.py:100:            # ``expected_state`` or constraints; rehearsal never guesses.
+core\executive\learning.py:103:            if step.expected_state and state:
+core\executive\learning.py:104:                unknown = [key for key in step.expected_state if key not in state]
+core\executive\learning.py:106:                    warnings.append(f"state not observed: {', '.join(unknown)}")
+core\executive\learning.py:212:    def inverse_state(self, action_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+core\executive\learning.py:241:        state = mission_context.setdefault("ask_once", {})
+core\executive\learning.py:242:        asked = state.setdefault("asked", [])
+core\executive\learning.py:243:        answers = state.setdefault("answers", {})
+core\executive\learning.py:257:        state = mission_context.setdefault("ask_once", {})
+core\executive\learning.py:258:        asked = state.setdefault("asked", [])
+core\executive\learning.py:261:        state.setdefault("answers", {})[question] = answer
+core\executive\learning.py:283:               result: str = "", repairs: int = 0, expected_state: Optional[dict[str, Any]] = None,
+core\executive\learning.py:288:            expected_state=dict(expected_state or {}), last_result=result, verified=verified,
+core\executive\mind.py:26:    """One local executive state owner; execution remains in existing Agent."""
+core\executive\mind.py:50:        self.world_state = self.world
+core\executive\mind.py:68:                      desired_state: Optional[dict[str, Any]] = None,
+core\executive\mind.py:69:                      actual_state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+core\executive\mind.py:79:        if desired_state is not None:
+core\executive\mind.py:80:            self.world.observe(f"goal.{node.id if node else goal_text}", desired_state,
+core\executive\mind.py:81:                               source="verified_state" if verified else "observed_state",
+core\executive\mind.py:86:                "tool": tool, "diff": self.goals.diff(node.id, actual_state or {}) if node and actual_state else {}}
+core\executive\mind.py:89:                args: Optional[dict[str, Any]] = None, desired_state: Optional[dict[str, Any]] = None,
+core\executive\mind.py:92:                                     desired_state=desired_state, constraints=constraints, risk=risk)
+core\executive\mind.py:94:    def rehearse(self, plan: CommandPlan, current_state: Optional[dict[str, Any]] = None):
+core\executive\mind.py:95:        return self.rehearsal.rehearse(plan, current_state)
+core\cua\engine.py:64:    def __repr__(self) -> str:  # pragma: no cover
+core\memory\relationship\learning.py:40:            changes["likes_confirmation"] = False
+core\memory\relationship\learning.py:42:            changes["likes_confirmation"] = True
+core\memory\relationship\learning.py:132:            likes_confirmation=(
+core\memory\relationship\learning.py:133:                data.get("likes_confirmation")
+core\memory\relationship\learning.py:134:                if isinstance(data.get("likes_confirmation"), bool) else True
+core\memory\relationship\learning.py:137:            preferred_address=str(data.get("preferred_address") or "сэр"),
+core\memory\relationship\learning.py:150:            "likes_confirmation": (
+core\memory\relationship\models.py:15:    last_confirmed: str
+core\memory\relationship\models.py:31:            last_confirmed=str(value.get("last_confirmed") or ""),
+core\memory\relationship\store.py:1:"""Local, quality-controlled storage for non-sensitive interaction preferences."""
+core\memory\relationship\store.py:29:    "likes_confirmation", "preferred_address", "technical_level",
+core\memory\relationship\store.py:74:                    confidence=round(incoming_confidence, 3), last_confirmed=stamp,
+core\memory\relationship\store.py:87:                    last_confirmed=stamp, expires_at=expires, category=str(category)[:40],
+core\memory\relationship\store.py:90:            records.sort(key=lambda item: item.last_confirmed)
+core\memory\relationship\store.py:119:        scored.sort(key=lambda pair: (pair[0], pair[1].last_confirmed), reverse=True)
+jarvis\scripts\operatorModel.test.ts:4:  confirmationFromEvent, createMission, fixtureMission, reduceMission,
+jarvis\scripts\operatorModel.test.ts:10:assert.deepEqual(mission.steps.map((step) => step.state), ['active', 'pending', 'pending', 'pending']);
+jarvis\scripts\operatorModel.test.ts:12:const executing: BackendEvent = { type: 'state:executing', payload: null, timestamp: 101 };
+jarvis\scripts\operatorModel.test.ts:15:assert.deepEqual(downloading.steps.map((step) => step.state), ['complete', 'active', 'pending', 'pending']);
+jarvis\scripts\operatorModel.test.ts:24:  type: 'event:result', payload: { success: true, verification: { status: 'verified' }, result: 'desired state observed' }, timestamp: 103,
+jarvis\scripts\operatorModel.test.ts:28:assert.deepEqual(verifiedResult.steps.map((step) => step.state), ['complete', 'complete', 'complete', 'complete']);
+jarvis\scripts\operatorModel.test.ts:30:const confirmation = confirmationFromEvent({
+jarvis\scripts\operatorModel.test.ts:31:  type: 'confirmation:required',
+jarvis\scripts\operatorModel.test.ts:32:  payload: { confirmationId: 'grant-1', prompt: 'Разрешить установку?', tool: 'software.install', risk: { level: 'high' } },
+jarvis\scripts\operatorModel.test.ts:35:assert.equal(confirmation?.id, 'grant-1');
+jarvis\scripts\operatorModel.test.ts:36:assert.equal(confirmation?.risk.level, 'high');
+core\cua\grounding.py:40:    def __repr__(self) -> str:  # pragma: no cover
+jarvis\scripts\wsBackend.test.ts:54:socket.receive({ type: 'state', state: 'thinking' });
+jarvis\scripts\wsBackend.test.ts:64:  type: 'confirmation_required',
+jarvis\scripts\wsBackend.test.ts:65:  confirmation_id: 'confirm-1',
+jarvis\scripts\wsBackend.test.ts:71:  'state:thinking',
+jarvis\scripts\wsBackend.test.ts:73:  'confirmation:required',
+jarvis\scripts\wsBackend.test.ts:112:await transport.answerConfirmation('confirm-1', false);
+jarvis\scripts\wsBackend.test.ts:114:  type: 'confirm',
+jarvis\scripts\wsBackend.test.ts:115:  confirmation_id: 'confirm-1',
+jarvis\scripts\wsBackend.test.ts:123:console.log('wsBackend: command, response, confirmation and masked settings passed');
+jarvis\src-tauri\capabilities\default.json:12:    "core:window:allow-start-dragging",
+jarvis\src-tauri\Cargo.lock:295: "piper",
+jarvis\src-tauri\Cargo.lock:531: "document-features",
+jarvis\src-tauri\Cargo.lock:873:name = "document-features"
+jarvis\src-tauri\Cargo.lock:2821:name = "piper"
+jarvis\src-tauri\src\main.rs:23:    let state = app.state::<BackendProcess>();
+jarvis\src-tauri\src\main.rs:24:    let Ok(mut guard) = state.0.lock() else { return };
+jarvis\src-tauri\src\main.rs:219:        let state = app.state::<BackendProcess>();
+jarvis\src-tauri\src\main.rs:220:        let mut child = match state.0.lock() {
+jarvis\src-tauri\src\main.rs:323:                        button_state: MouseButtonState::Up,
+jarvis\scripts\wsProtocol.test.ts:8:  mapSocketEnvelope({ type: 'state', state: 'thinking' }, now),
+jarvis\scripts\wsProtocol.test.ts:9:  [{ type: 'state:thinking', payload: null, timestamp: now }],
+jarvis\scripts\wsProtocol.test.ts:29:  mapSocketEnvelope({ type: 'runtime_status', state: 'loading_model', ready: false, diagnostics: { backend: 'cpu' } }, now),
+jarvis\scripts\wsProtocol.test.ts:30:  [{ type: 'runtime:status', payload: { state: 'loading_model', ready: false, diagnostics: { backend: 'cpu' } }, timestamp: now }],
+jarvis\scripts\wsProtocol.test.ts:35:    type: 'confirmation_required',
+jarvis\scripts\wsProtocol.test.ts:36:    confirmation_id: 'confirm-1',
+jarvis\scripts\wsProtocol.test.ts:42:    type: 'confirmation:required',
+jarvis\scripts\wsProtocol.test.ts:44:      confirmationId: 'confirm-1',
+core\living\workflow.py:48:    desired_state: dict[str, Any] = field(default_factory=dict)
+core\living\workflow.py:49:    observed_state: dict[str, Any] = field(default_factory=dict)
+core\living\workflow.py:64:    desired_state: dict[str, Any]
+core\living\workflow.py:103:            self._safe_mapping(run.desired_state), self._safe_mapping(run.observed_state),
+core\living\workflow.py:162:        desired = next((run.desired_state for run in reversed(runs) if run.success and run.desired_state), {})
+core\living\workflow.py:226:                    desired_state=dict(raw.get("desired_state") or {}),
+core\living\workflow.py:227:                    observed_state=dict(raw.get("observed_state") or {}),
+core\living\workflow.py:255:            success_criteria=[f"{key}={value!r}" for key, value in candidate.desired_state.items()],
+core\living\workflow.py:264:            desired_state=dict(candidate.desired_state),
+core\living\workflow.py:322:            verification = self.verifier.verify(candidate.desired_state, observed)
+jarvis\src\App.module.css:44:  -webkit-app-region: no-drag;
+core\executive\models.py:39:    """Epistemic origin of a world fact; current state is never memory."""
+core\executive\models.py:53:    CANCELLED = "cancelled"
+core\executive\models.py:102:    desired_state: Dict[str, Any] = field(default_factory=dict)
+core\executive\models.py:210:    expected_state: Dict[str, Any] = field(default_factory=dict)
+core\executive\models.py:212:    requires_confirmation: bool = False
+core\executive\models.py:223:    desired_state: Dict[str, Any] = field(default_factory=dict)
+core\executive\models.py:306:    expected_state: Dict[str, Any] = field(default_factory=dict)
+core\executive\world.py:1:"""Canonical lazy world state with OS observers, provenance and TTL cache."""
+core\executive\world.py:98:    """Lightweight concept router for read-only current-state questions."""
+core\executive\world.py:107:        ("filesystem", re.compile(r"(?i)(?:файл|pdf|docx|xlsx|загрузк|downloads|documents|desktop).{0,50}(?:найд|последн|свеж|недав)|(?:найд|последн).{0,50}(?:файл|pdf|docx|xlsx)")),
+core\executive\world.py:108:        ("storage", re.compile(r"(?i)(?:диск|\bтом(?:а|ов|ы)\b|накопител|хранилищ|storage|drive|volume|свободн.{0,20}мест|мест.{0,20}(?:свобод|остал)|занят.{0,20}(?:диск|мест))")),
+core\executive\world.py:123:        ("audio", re.compile(r"(?i)(?:громкост|mute|звук|аудио|музык).{0,30}(?:сейчас|игра|уров|включ|выключ|state|status)")),
+core\executive\world.py:133:        # a past application state needs episodic memory instead of a process snapshot.
+core\executive\world.py:166:        "storage": 15.0, "filesystem": 10.0, "applications": 300.0,
+core\executive\world.py:171:            "documents": Path.home() / "Documents",
+core\executive\world.py:239:    def _observe_storage(self, **_: Any) -> tuple[dict[str, Any], str, list[str]]:
+core\executive\world.py:349:        self, *, roots: Sequence[str] = ("documents", "downloads", "desktop"),
+core\executive\world.py:353:        cancel_event: threading.Event | None = None, **_: Any,
+core\executive\world.py:370:            if cancel_event is not None and cancel_event.is_set():
+core\executive\world.py:371:                stopped_reason = "cancelled"
+core\executive\world.py:381:                        if cancel_event is not None and cancel_event.is_set():
+core\executive\world.py:382:                            stopped_reason = "cancelled"
+core\executive\world.py:509:    """Single owner for current facts; volatile OS state remains memory-only."""
+core\executive\world.py:644:        relevant = {key: value for key, value in options.items() if key not in {"cancel_event", "force"}}
+core\executive\world.py:663:    if fact.domain == "storage":
+jarvis\src\App.tsx:8:  confirmationFromEvent, fixtureMission, reduceMission,
+jarvis\src\App.tsx:32:    { id: 'fixture-jarvis', role: 'jarvis', text: fixture === 'verified' ? 'Готово. Проверяйте, сэр.' : 'Сейчас разберусь, сэр.', timestamp: now - 24_000 },
+jarvis\src\App.tsx:38:  const saved = window.localStorage.getItem('jarvis.ui.mode');
+jarvis\src\App.tsx:48:  const [state, setState] = useState<PresenceState>(fixture === 'verified' ? 'idle' : fixture ? 'thinking' : 'idle');
+jarvis\src\App.tsx:52:  const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(() => fixture === 'verify' ? { id: 'fixture-confirmation', prompt: 'Разрешить установку приложения?', tool: 'software.install', risk: { level: 'low' } } : null);
+jarvis\src\App.tsx:64:  const updateMode = useCallback((next: UiMode) => { window.localStorage.setItem('jarvis.ui.mode', next); setMode(next); }, []);
+jarvis\src\App.tsx:69:      if (event.type.startsWith('state:')) {
+jarvis\src\App.tsx:81:        const payload = event.payload as { state?: string; ready?: boolean; diagnostics?: Record<string, unknown> };
+jarvis\src\App.tsx:82:        setRuntimeState(payload.ready ? 'ready' : (payload.state ?? 'starting'));
+jarvis\src\App.tsx:87:      if (event.type === 'confirmation:required') {
+jarvis\src\App.tsx:88:        setConfirmation(confirmationFromEvent(event));
+jarvis\src\App.tsx:165:    tts.interrupt();
+jarvis\src\App.tsx:166:    if (!fixture) void backend.interrupt().catch(() => undefined);
+jarvis\src\App.tsx:177:    const pending = confirmation;
+jarvis\src\App.tsx:182:      const event: BackendEvent = { type: 'state:executing', payload: null, timestamp: Date.now() };
+jarvis\src\App.tsx:186:  }, [backend, confirmation, fixture, transition]);
+jarvis\src\App.tsx:188:  const interrupt = useCallback(() => {
+jarvis\src\App.tsx:189:    tts.interrupt();
+jarvis\src\App.tsx:190:    if (!fixture) void backend.interrupt().catch(() => undefined);
+jarvis\src\App.tsx:208:    <TrayIcon onHotkey={() => { void backend.hotkeyPressed(); void backend.voiceListen(); }} state={state} />
+jarvis\src\App.tsx:211:      state={state}
+jarvis\src\App.tsx:214:      confirmation={confirmation}
+jarvis\src\App.tsx:218:      onInterrupt={interrupt}
+core\executive\__init__.py:3:The package is deliberately additive.  It owns structured executive state but
+jarvis\src-tauri\tauri.conf.json:26:        "dragDropEnabled": true
+core\llm\remote_api.py:269:    def _log_retry(self, state: RetryCallState) -> None:
+core\llm\remote_api.py:271:        exception = state.outcome.exception() if state.outcome else None
+core\llm\remote_api.py:274:            self.name, state.attempt_number, self._max_retries, exception,
+core\llm\remote_api.py:300:                        attempt.retry_state.attempt_number,
+core\llm\llama_server.py:34:def _visible_stream_piece(piece: str, *, state: dict[str, bool]) -> str:
+core\llm\llama_server.py:40:        if state.get("in_think", False):
+core\llm\llama_server.py:45:            state["in_think"] = False
+core\llm\llama_server.py:53:        state["in_think"] = True
+core\llm\llama_server.py:294:        think_state = {"in_think": False}
+core\llm\llama_server.py:309:                    visible = _visible_stream_piece(str(piece), state=think_state)
+jarvis\src\bridge\StateMachine.ts:1:export type PresenceState = 'idle' | 'listening' | 'thinking' | 'executing' | 'speaking' | 'error' | 'proactive';
+jarvis\src\bridge\StateMachine.ts:4:  idle: ['listening', 'thinking', 'executing', 'speaking', 'error', 'proactive'],
+jarvis\src\bridge\StateMachine.ts:5:  listening: ['idle', 'thinking', 'executing', 'speaking', 'error'],
+jarvis\src\bridge\StateMachine.ts:6:  thinking: ['idle', 'listening', 'executing', 'speaking', 'error'],
+jarvis\src\bridge\StateMachine.ts:7:  executing: ['idle', 'thinking', 'speaking', 'error'],
+jarvis\src\bridge\StateMachine.ts:8:  speaking: ['idle', 'listening', 'thinking', 'executing', 'error'],
+jarvis\src\bridge\StateMachine.ts:10:  proactive: ['idle', 'listening', 'speaking', 'thinking', 'executing'],
+jarvis\src\bridge\StateMachine.ts:13:/** Small, UI-only state machine. It deliberately does not alter the WS protocol. */
+jarvis\src\bridge\StateMachine.ts:17:  get state(): PresenceState { return this.value; }
+jarvis\src\bridge\StateMachine.ts:25:export function presenceFromTransport(state: string): PresenceState {
+jarvis\src\bridge\StateMachine.ts:26:  if (state === 'listening') return 'listening';
+jarvis\src\bridge\StateMachine.ts:27:  if (state === 'executing') return 'executing';
+jarvis\src\bridge\StateMachine.ts:28:  if (state === 'streaming') return 'speaking';
+jarvis\src\bridge\StateMachine.ts:29:  if (state === 'thinking' || state === 'loading_model') return 'thinking';
+jarvis\src\bridge\StateMachine.ts:30:  if (state === 'error') return 'error';
+jarvis\src\state\uiStateMachine.ts:3: * Pure, testable state transitions for the entity + surface toggles.
+jarvis\src\state\uiStateMachine.ts:40:export function uiReducer(state: UIState, action: UIAction): UIState {
+jarvis\src\state\uiStateMachine.ts:44:      if (!validTransitions[state.entityState].includes(nextState)) {
+jarvis\src\state\uiStateMachine.ts:46:          `[StateMachine] Invalid transition: ${state.entityState} → ${nextState}`
+jarvis\src\state\uiStateMachine.ts:48:        return state;
+jarvis\src\state\uiStateMachine.ts:50:      return { ...state, entityState: nextState };
+jarvis\src\state\uiStateMachine.ts:54:      return { ...state, isDrawerOpen: !state.isDrawerOpen };
+jarvis\src\state\uiStateMachine.ts:57:      return { ...state, isDrawerOpen: action.payload as boolean };
+jarvis\src\state\uiStateMachine.ts:60:      return { ...state, isSidebarOpen: !state.isSidebarOpen };
+jarvis\src\state\uiStateMachine.ts:63:      return { ...state, isSidebarOpen: action.payload as boolean };
+jarvis\src\state\uiStateMachine.ts:66:      return { ...state, isSettingsOpen: action.payload as boolean };
+jarvis\src\state\uiStateMachine.ts:69:      return { ...state, isSettingsOpen: !state.isSettingsOpen };
+jarvis\src\state\uiStateMachine.ts:74:        ...state,
+jarvis\src\state\uiStateMachine.ts:76:          ...state.isEventExpanded,
+jarvis\src\state\uiStateMachine.ts:77:          [eventId]: !state.isEventExpanded[eventId],
+jarvis\src\state\uiStateMachine.ts:83:      return { ...state, streamingEventId: action.payload as string | null };
+jarvis\src\state\uiStateMachine.ts:87:      return { ...state, vitals: { ...state.vitals, ...vitals } };
+jarvis\src\state\uiStateMachine.ts:91:      return { ...state, windowEffect: action.payload as UIState['windowEffect'] };
+jarvis\src\state\uiStateMachine.ts:97:      return state;
+jarvis\src\state\uiStateMachine.ts:118:  isBusy: (state: UIState) =>
+jarvis\src\state\uiStateMachine.ts:119:    ['thinking', 'executing', 'streaming', 'cloud'].includes(state.entityState),
+jarvis\src\state\uiStateMachine.ts:121:  isThinking: (state: UIState) => state.entityState === 'thinking' || state.entityState === 'executing',
+jarvis\src\state\uiStateMachine.ts:123:  isStreaming: (state: UIState) => state.entityState === 'streaming',
+jarvis\src\state\uiStateMachine.ts:125:  hasError: (state: UIState) => state.entityState === 'error',
+jarvis\src\state\uiStateMachine.ts:127:  rimBreatheDuration: (state: UIState) =>
+jarvis\src\state\uiStateMachine.ts:128:    state.entityState === 'thinking' ? 1800 : 4500,
+jarvis\src\presence.css:25:  --state-a: var(--accent-primary);
+jarvis\src\presence.css:26:  --state-b: var(--accent-secondary);
+jarvis\src\presence.css:40:.aiosWorkspace[data-state="listening"], .aiosPresence[data-state="listening"] { --state-a: #41bfff; --state-b: var(--accent-primary); }
+jarvis\src\presence.css:41:.aiosWorkspace[data-state="thinking"], .aiosPresence[data-state="thinking"] { --state-a: var(--accent-secondary); --state-b: var(--accent-tertiary); }
+jarvis\src\presence.css:42:.aiosWorkspace[data-state="executing"], .aiosPresence[data-state="executing"] { --state-a: var(--accent-energy); --state-b: var(--accent-tertiary); }
+jarvis\src\presence.css:43:.aiosWorkspace[data-state="speaking"], .aiosPresence[data-state="speaking"] { --state-a: var(--accent-success); --state-b: var(--accent-primary); }
+jarvis\src\presence.css:44:.aiosWorkspace[data-state="success"], .aiosPresence[data-state="success"] { --state-a: var(--accent-success); --state-b: #d7ff72; }
+jarvis\src\presence.css:45:.aiosWorkspace[data-state="error"], .aiosPresence[data-state="error"] { --state-a: var(--accent-error); --state-b: var(--accent-energy); }
+jarvis\src\presence.css:46:.aiosWorkspace[data-state="starting"], .aiosPresence[data-state="starting"] { --state-a: var(--accent-secondary); --state-b: var(--accent-primary); }
+jarvis\src\presence.css:76:.statusItem[data-tone="success"] > i, .statusItem[data-tone="speaking"] > i { color: var(--accent-success); background: color-mix(in srgb, var(--accent-success), transparent 88%); }
+jarvis\src\presence.css:109:.coreDeck { position: relative; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid rgba(179,196,229,.1); border-radius: 8px 18px 18px 8px; background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--state-a), transparent 89%), transparent 38%), linear-gradient(165deg, rgba(13,16,27,.6), rgba(4,6,11,.32)); box-shadow: inset 0 1px rgba(255,255,255,.025), 0 20px 55px rgba(0,0,0,.25); }
+jarvis\src\presence.css:110:.depthGrid { position: absolute; inset: 0; opacity: .38; background-image: linear-gradient(color-mix(in srgb, var(--state-a), transparent 93%) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--state-b), transparent 94%) 1px, transparent 1px); background-size: 42px 42px; mask-image: radial-gradient(ellipse at 50% 46%, black, transparent 76%); transform: perspective(500px) rotateX(57deg) scale(1.55) translateY(27%); transform-origin: center bottom; }
+jarvis\src\presence.css:112:.particleField i { --x: calc((var(--i) * 47) % 97); --y: calc((var(--i) * 71) % 89); position: absolute; left: calc(var(--x) * 1%); top: calc(var(--y) * 1%); width: 2px; height: 2px; border-radius: 50%; background: var(--state-a); box-shadow: 0 0 8px currentColor; opacity: .28; animation: particleDrift calc(6s + var(--i) * .3s) ease-in-out infinite alternate; }
+jarvis\src\presence.css:116:.coreAura { position: absolute; inset: 16%; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--state-a), transparent 48%), color-mix(in srgb, var(--state-b), transparent 78%) 40%, transparent 70%); filter: blur(calc(15px * var(--glow-intensity))); animation: auraBreath 3.8s ease-in-out infinite; }
+jarvis\src\presence.css:117:.corePrism { position: absolute; inset: 24%; border: 1px solid color-mix(in srgb, var(--state-b), transparent 42%); background: linear-gradient(135deg, color-mix(in srgb, var(--state-a), transparent 82%), transparent 55%); box-shadow: inset 0 0 28px color-mix(in srgb, var(--state-b), transparent 84%), 0 0 calc(26px * var(--glow-intensity)) color-mix(in srgb, var(--state-a), transparent 70%); transform: rotate(45deg); animation: prismTurn 12s linear infinite; }
+jarvis\src\presence.css:118:.prismB { inset: 31%; transform: rotate(22.5deg); border-color: color-mix(in srgb, var(--state-a), transparent 25%); animation-direction: reverse; animation-duration: 8s; }
+jarvis\src\presence.css:119:.coreOrbit { position: absolute; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--state-a), transparent 35%); }
+jarvis\src\presence.css:120:.orbitA { inset: 5%; border-style: dashed; animation: orbitSpin 18s linear infinite; }.orbitB { inset: 15%; border-color: color-mix(in srgb, var(--state-b), transparent 22%); border-width: 2px 1px; animation: orbitSpin 11s linear infinite reverse; }.orbitC { inset: 36%; border: 2px solid color-mix(in srgb, var(--state-a), transparent 12%); box-shadow: 0 0 calc(18px * var(--glow-intensity)) color-mix(in srgb, var(--state-a), transparent 55%); animation: orbitPulse 2.7s ease-in-out infinite; }
+jarvis\src\presence.css:121:.coreOrbit > i { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--state-b); box-shadow: 0 0 12px var(--state-b); }.orbitA i:nth-child(1){left:16%;top:10%}.orbitA i:nth-child(2){right:-3px;top:52%}.orbitA i:nth-child(3){left:35%;bottom:-3px}.orbitB i:nth-child(1){left:-3px;top:45%}.orbitB i:nth-child(2){right:17%;top:5%}.orbitB i:nth-child(3){right:6%;bottom:20%}.orbitB i:nth-child(4){left:20%;bottom:5%}
+jarvis\src\presence.css:122:.coreGem { position: absolute; inset: 38%; display: grid; place-items: center; border-radius: 18px; color: white; background: linear-gradient(145deg, color-mix(in srgb, var(--state-a), #fff 8%), color-mix(in srgb, var(--state-b), #05070d 45%)); box-shadow: inset 0 1px 8px rgba(255,255,255,.45), 0 0 calc(30px * var(--glow-intensity)) var(--state-a); transform: rotate(45deg); transition: .35s ease; }
+jarvis\src\presence.css:125:.thoughtNodes i { --angle: calc(var(--i) * 40deg); position: absolute; left: calc(50% - 4px); top: calc(50% - 4px); width: 8px; height: 8px; border-radius: 50%; background: var(--state-b); box-shadow: 0 0 13px var(--state-b); transform: rotate(var(--angle)) translateY(calc(var(--core-size) * -.38)); animation: nodeSignal 1.8s ease-in-out infinite calc(var(--i) * -.11s); }
+jarvis\src\presence.css:126:.listenRipples { display: grid; place-items: center; }.listenRipples i { position: absolute; width: 44%; height: 44%; border: 1px solid var(--state-a); border-radius: 50%; animation: listenWave 2.1s ease-out infinite; }.listenRipples i:nth-child(2){animation-delay:.7s}.listenRipples i:nth-child(3){animation-delay:1.4s}
+jarvis\src\presence.css:127:.executionBlades i { --angle: calc(var(--i) * 60deg); position: absolute; left: calc(50% - 2px); top: 4%; width: 4px; height: 25%; border-radius: 5px; transform-origin: 50% calc(var(--core-size) * .46); transform: rotate(var(--angle)); background: linear-gradient(var(--state-a), transparent); box-shadow: 0 0 10px var(--state-a); }
+jarvis\src\presence.css:128:.voiceSpectrum { inset: 39% 26%; display: flex; align-items: center; justify-content: center; gap: 3px; z-index: 4; }.voiceSpectrum i { width: 3px; height: 35%; border-radius: 4px; background: white; box-shadow: 0 0 8px var(--state-a); animation: spectrum .72s ease-in-out infinite alternate; }.voiceSpectrum i:nth-child(2n){animation-delay:-.3s;height:70%}.voiceSpectrum i:nth-child(3n){animation-delay:-.5s;height:100%}
+jarvis\src\presence.css:131:.aiCore[data-state="listening"] .listenRipples, .aiCore[data-state="thinking"] .thoughtNodes, .aiCore[data-state="executing"] .executionBlades, .aiCore[data-state="speaking"] .voiceSpectrum, .aiCore[data-state="success"] .successCrown, .aiCore[data-state="error"] .errorSlash { opacity: 1; }
+jarvis\src\presence.css:132:.aiCore[data-state="listening"] .orbitA { animation-duration: 7s; }.aiCore[data-state="listening"] .coreGem { border-radius: 50%; transform: rotate(0) scale(.86); }.aiCore[data-state="listening"] .coreGem span{transform:none}
+jarvis\src\presence.css:133:.aiCore[data-state="thinking"] .corePrism { border-radius: 42% 58% 35% 65%; animation-duration: 3.8s; }.aiCore[data-state="thinking"] .orbitC { border-style: dotted; }
+jarvis\src\presence.css:134:.aiCore[data-state="executing"] .coreGem { border-radius: 4px; transform: rotate(45deg) scale(1.08); }.aiCore[data-state="executing"] .orbitA { border-style: solid; clip-path: polygon(0 0,100% 0,100% 34%,0 72%); animation-duration: 4s; }
+jarvis\src\presence.css:135:.aiCore[data-state="speaking"] .coreGem { border-radius: 50%; transform: none; }.aiCore[data-state="speaking"] .coreGem span{opacity:0}.aiCore[data-state="speaking"] .orbitB { animation-duration: 3s; }
+jarvis\src\presence.css:136:.aiCore[data-state="success"] .coreGem { transform: rotate(45deg) scale(.74); opacity:.45}.aiCore[data-state="success"] .orbitA,.aiCore[data-state="success"] .orbitB{border-style:solid;animation:none}
+jarvis\src\presence.css:137:.aiCore[data-state="error"] .coreGem { background:#21070e; box-shadow:0 0 28px color-mix(in srgb,var(--accent-error),transparent 20%)}.aiCore[data-state="error"] .orbitA{border-color:var(--accent-error);clip-path:polygon(0 0,44% 0,52% 28%,100% 20%,100% 100%,58% 100%,47% 70%,0 78%)}
+jarvis\src\presence.css:138:.stateCopy { display: flex; align-items: center; gap: 9px; margin-top: -3px; text-align: left; }.stateDot { width: 8px; height: 8px; border-radius: 50%; background: var(--state-a); box-shadow: 0 0 13px var(--state-a); animation: stateBeat 1.9s ease-in-out infinite; }.stateCopy strong { display:block; color:var(--state-a); font:600 17px var(--font-display)}.stateCopy p{margin:2px 0 0;color:var(--os-dim);font-size:9px}
+jarvis\src\presence.css:139:.activeTrace { position: absolute; left: 50%; bottom: 18px; width: min(84%, 390px); transform: translateX(-50%); padding: 10px 36px 10px 12px; border: 1px solid color-mix(in srgb, var(--state-a), transparent 72%); border-radius: 10px; background: rgba(7,9,15,.72); box-shadow: 0 10px 30px rgba(0,0,0,.28); backdrop-filter: blur(15px); }.activeTrace span{color:var(--state-a);font:8px var(--font-data)}.activeTrace p{margin:4px 0 0;color:var(--os-muted);font-size:9px;line-height:1.35;max-height:38px;overflow:hidden}.activeTrace>i{position:absolute;right:13px;top:50%;width:8px;height:8px;border-radius:50%;background:var(--state-a);box-shadow:0 0 12px var(--state-a)}.activeTrace>i[data-ok="true"]{background:var(--accent-success);box-shadow:0 0 12px var(--accent-success)}
+jarvis\src\presence.css:157:.confirmationBar { position:absolute;z-index:50;left:50%;bottom:98px;width:min(680px,calc(100% - 40px));transform:translateX(-50%);display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:13px;border:1px solid color-mix(in srgb,var(--accent-energy),transparent 30%);border-radius:14px;background:rgba(24,16,8,.96);box-shadow:0 25px 70px rgba(0,0,0,.6),0 0 24px color-mix(in srgb,var(--accent-energy),transparent 78%)}.confirmationBar strong,.confirmationBar span{display:block}.confirmationBar strong{color:var(--accent-energy);font-size:11px}.confirmationBar span{margin-top:3px;color:var(--os-muted);font-size:9px}.confirmationBar button{display:flex;align-items:center;gap:5px;padding:8px 10px;border:1px solid var(--os-line-strong);border-radius:8px;color:var(--os-muted);background:rgba(255,255,255,.03);font-size:9px}.confirmationBar button:first-of-type{color:#130d04;border-color:var(--accent-energy);background:var(--accent-energy)}
+jarvis\src\presence.css:160:.aiosPresence { display:grid;grid-template-rows:48px 214px minmax(104px,1fr) 42px 74px;border-radius:22px;background:radial-gradient(circle at 50% 28%,color-mix(in srgb,var(--state-a),transparent 85%),transparent 37%),radial-gradient(circle at 90% 75%,color-mix(in srgb,var(--accent-tertiary),transparent 93%),transparent 42%),linear-gradient(155deg,color-mix(in srgb,var(--surface-base),#121729 10%),var(--surface-base));box-shadow:0 30px 90px rgba(0,0,0,.65)}
+jarvis\src\presence.css:161:.presenceGlow{position:absolute;inset:0;pointer-events:none;background:linear-gradient(120deg,transparent 0 43%,color-mix(in srgb,var(--state-a),transparent 94%) 52%,transparent 60%);animation:presenceSweep 7s linear infinite}
+jarvis\src\presence.css:162:.aiosPresence>header{position:relative;z-index:20;display:flex;align-items:center;justify-content:space-between;padding:0 9px 0 14px;border-bottom:1px solid var(--os-line);background:rgba(6,8,14,.62);backdrop-filter:blur(18px)}.presenceBrand{display:flex;align-items:center;gap:7px}.presenceBrand>i{width:7px;height:7px;border-radius:50%;background:var(--state-a);box-shadow:0 0 12px var(--state-a)}.presenceBrand strong{font:700 12px var(--font-display);letter-spacing:.15em}.presenceBrand span{color:var(--os-dim);font-size:8px}.aiosPresence>header nav{display:flex}.presenceCore{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center}.presenceState{display:flex;flex-direction:column;align-items:center;margin-top:-11px}.presenceState strong{color:var(--state-a);font:600 15px var(--font-display)}.presenceState span{margin-top:2px;color:var(--os-dim);font-size:8px}
+jarvis\src\presence.css:179:@keyframes stateBeat{50%{transform:scale(.65);opacity:.45}}
+jarvis\src\presence\TrayIcon.tsx:3:export function TrayIcon({ onHotkey, state: _state }: { onHotkey: () => void; state: PresenceState }) { useEffect(() => { const listener = () => onHotkey(); window.addEventListener('jarvis:hotkey', listener); return () => window.removeEventListener('jarvis:hotkey', listener); }, [onHotkey]); return null; }
+jarvis\src\window\StatusBar.tsx:4:export function StatusBar({ state }: { state: PresenceState }) {
+jarvis\src\window\StatusBar.tsx:7:  return <header className="statusBar" data-tauri-drag-region>
+jarvis\src\window\StatusBar.tsx:8:    <span>JARVIS</span><time>{time}</time><i className={`presenceDot ${state}`} aria-label={state} />
+jarvis\src\window\MainWindow.tsx:2:export function MainWindow({ messages, state, onSend, firstLaunch }: { messages: PresenceMessage[]; state: PresenceState; onSend: (text: string) => void; firstLaunch: boolean }) { return <main className="jarvisWindow"><StatusBar state={state} /><MessageStream messages={messages} /><InputLine onSend={onSend} autoFocus placeholder={firstLaunch ? 'Как тебя зовут?' : 'Скажи мне...'} /></main>; }
+jarvis\src\components\ActivityStream\ActivityStream.module.css:17:/* ---- Olympus welcome (empty state) ---- */
+jarvis\src\components\ActivityStream\ActivityStream.tsx:74:            <CoreSymbol state="idle" size={58} />
+jarvis\src\hooks\useUIState.tsx:3: * React context + reducer for global UI state
+jarvis\src\hooks\useUIState.tsx:7:import { uiReducer, initialUIState, selectors, type UIAction } from '@/state/uiStateMachine';
+jarvis\src\hooks\useUIState.tsx:11:  state: UIState;
+jarvis\src\hooks\useUIState.tsx:17:  const [state, dispatch] = useReducer(uiReducer, initialUIState);
+jarvis\src\hooks\useUIState.tsx:19:  const value = useMemo(() => ({ state, dispatch, selectors }), [state]);
+jarvis\src\hooks\useUIState.tsx:33:  return { ...context.state, dispatch: context.dispatch, selectors: context.selectors };
+jarvis\src\hooks\useFocusTrap.ts:50:    const prevFocus = document.activeElement as HTMLElement | null;
+jarvis\src\hooks\useFocusTrap.ts:51:    const prevOverflow = document.body.style.overflow;
+jarvis\src\hooks\useFocusTrap.ts:52:    if (scrollLock) document.body.style.overflow = 'hidden';
+jarvis\src\hooks\useFocusTrap.ts:73:      if (e.shiftKey && document.activeElement === first) {
+jarvis\src\hooks\useFocusTrap.ts:76:      } else if (!e.shiftKey && document.activeElement === last) {
+jarvis\src\hooks\useFocusTrap.ts:82:    document.addEventListener('keydown', onKeyDown, false);
+jarvis\src\hooks\useFocusTrap.ts:84:      document.removeEventListener('keydown', onKeyDown, false);
+jarvis\src\hooks\useFocusTrap.ts:85:      if (scrollLock) document.body.style.overflow = prevOverflow;
+jarvis\src\hooks\useBackendBridge.ts:27:// Single source of truth for transport -> entity state (kept in backend.ts).
+jarvis\src\hooks\useBackendBridge.ts:46:      if (e.type.startsWith('state:')) {
+jarvis\src\hooks\useBackendBridge.ts:53:        const runtime = e.payload as { ready?: boolean; state?: string };
+jarvis\src\hooks\useBackendBridge.ts:57:        } else if (runtime.state === 'loading_model' || runtime.state === 'starting') {
+jarvis\src\hooks\useBackendBridge.ts:63:      // Vitals — kept in UI state only (no permanent CPU/RAM dashboard rendered)
+jarvis\src\hooks\useBackendBridge.ts:101:      // Pending HIGH-risk confirmation from backend
+jarvis\src\hooks\useBackendBridge.ts:102:      if (e.type === 'confirmation:required') {
+jarvis\src\hooks\useBackendBridge.ts:130:  const interrupt = useCallback(async () => {
+jarvis\src\hooks\useBackendBridge.ts:131:    await backend.interrupt();
+jarvis\src\hooks\useBackendBridge.ts:141:  return { sendCommand, interrupt, answerConfirmation, pendingConfirmation, isConnected };
+core\orchestrator.py:4:1. Intake: new_state, push в short_term
+core\orchestrator.py:42:from core.state import JarvisState, ActionResult, new_state, push_message, trim_short_memory
+core\orchestrator.py:163:            world_state=self._agent.executive.world,
+core\orchestrator.py:190:        # Sprint 13: one continuity/state coordinator above the existing
+core\orchestrator.py:265:            "Do not add permissions or actions not stated by the user.\n"
+core\orchestrator.py:299:                outputs={"state": "verified_state"},
+core\orchestrator.py:303:                confirmation_policy="policy",
+core\orchestrator.py:324:    def _new_state(self, text: str, *, include_executive: bool = True) -> JarvisState:
+core\orchestrator.py:325:        """Create a state with deterministic intent and bounded executive context."""
+core\orchestrator.py:326:        state = new_state(text)
+core\orchestrator.py:327:        state["intent"] = resolve_keyword_tool(text, text)
+core\orchestrator.py:329:            state["task_contract"] = self._intake.classify(text).to_dict()
+core\orchestrator.py:332:            state["task_contract"] = {}
+core\orchestrator.py:333:        state["latency_budget"] = self._latency_budget_for(state.get("intent"), text)
+core\orchestrator.py:336:                state["executive"] = self._agent.executive.snapshot()
+core\orchestrator.py:339:                state["executive"] = {}
+core\orchestrator.py:340:        return state
+core\orchestrator.py:360:    def _stamp_latency(state: JarvisState, started: float, path: str) -> JarvisState:
+core\orchestrator.py:362:        state.setdefault("latency", {})["total_ms"] = round(elapsed_ms, 3)
+core\orchestrator.py:363:        state["latency"]["path"] = path
+core\orchestrator.py:364:        state.setdefault("evidence", []).append(EvidenceRecord(
+core\orchestrator.py:365:            claim="request reached verified state" if state.get("verified") else "request completed without verified state",
+core\orchestrator.py:367:            confidence=1.0 if state.get("verified") else 0.0,
+core\orchestrator.py:368:            expected_state={"verified": True},
+core\orchestrator.py:369:            observed_state={"verified": bool(state.get("verified")), "tool": str(state.get("tool", ""))},
+core\orchestrator.py:372:        return state
+core\orchestrator.py:409:                        "state": "ready",
+core\orchestrator.py:424:                        "state": "unavailable",
+core\orchestrator.py:447:                        self._warmup_diagnostics["state"] = "downloading_model"
+core\orchestrator.py:489:                    "state": "ready",
+core\orchestrator.py:499:                    "state": "unavailable",
+core\orchestrator.py:630:        living_state = (
+core\orchestrator.py:636:            **living_state,
+core\orchestrator.py:659:            state = self._direct_cognitive_response(
+core\orchestrator.py:663:            state["semantic_mode"] = semantic.mode.value
+core\orchestrator.py:664:            state["semantic_llm_calls"] = semantic.llm_calls
+core\orchestrator.py:665:            state["required_integration"] = semantic.required_integration
+core\orchestrator.py:666:            state["integration_configured"] = semantic.integration_configured
+core\orchestrator.py:668:                state["mission_id"] = natural.mission.task_id
+core\orchestrator.py:669:                state["mission_status"] = natural.mission.status.value
+core\orchestrator.py:670:            return self._stamp_latency(state, request_started, "fast")
+core\orchestrator.py:689:            state = self._new_state(text)
+core\orchestrator.py:690:            state["response"] = ""
+core\orchestrator.py:691:            state["tts_text"] = None
+core\orchestrator.py:692:            state["addressed_to_atlas"] = False
+core\orchestrator.py:693:            state["address_confidence"] = cognitive_turn.confidence
+core\orchestrator.py:694:            return self._stamp_latency(state, request_started, "fast")
+core\orchestrator.py:715:            state = self._new_state(text)
+core\orchestrator.py:718:            self._session.to_state(state)
+core\orchestrator.py:719:            state["response"] = response
+core\orchestrator.py:720:            state["context_evidence"] = list(context_reply.get("evidence") or [])
+core\orchestrator.py:723:            state["tts_text"] = spoken
+core\orchestrator.py:724:            state["assistant_output"] = output.to_dict()
+core\orchestrator.py:725:            return self._stamp_latency(state, request_started, "fast")
+core\orchestrator.py:743:                qa_state = self._direct_cognitive_response(
+core\orchestrator.py:749:                qa_state["route"] = understanding.route.value
+core\orchestrator.py:750:                qa_state["quick_answer"] = answer.to_dict()
+core\orchestrator.py:751:                qa_state["confidence"] = understanding.confidence
+core\orchestrator.py:752:                return self._stamp_latency(qa_state, request_started, "fast")
+core\orchestrator.py:757:        living_state = (
+core\orchestrator.py:763:            **living_state,
+core\orchestrator.py:768:            self._cognitive.state.current_goal = mission.goal
+core\orchestrator.py:769:            self._cognitive.state.active_task = mission.current_step or "mission queued"
+core\orchestrator.py:770:            self._cognitive.state.active_mission_id = mission.task_id
+core\orchestrator.py:771:            self._cognitive.state.mission_state = mission.status.value
+core\orchestrator.py:772:            self._cognitive.store.save(self._cognitive.state)
+core\orchestrator.py:773:            ack = mission.acknowledgement or "Принято, сэр. Работаю."
+core\orchestrator.py:774:            state = self._new_state(text)
+core\orchestrator.py:776:            self._session.to_state(state)
+core\orchestrator.py:777:            state["response"] = ack
+core\orchestrator.py:780:            state["tts_text"] = rendered.text if rendered else None
+core\orchestrator.py:781:            state["assistant_output"] = ack_output.to_dict()
+core\orchestrator.py:782:            state["mission_id"] = mission.task_id
+core\orchestrator.py:783:            state["route"] = understanding.route.value
+core\orchestrator.py:784:            return self._stamp_latency(state, request_started, "background")
+core\orchestrator.py:821:        state = self._new_state(
+core\orchestrator.py:826:        self._session.to_state(state)
+core\orchestrator.py:831:        if (not outcome.needs_confirmation
+core\orchestrator.py:837:        self._session.to_state(state)
+core\orchestrator.py:844:        state["response"] = response
+core\orchestrator.py:845:        state["tts_text"] = spoken
+core\orchestrator.py:846:        state["assistant_output"] = output.to_dict()
+core\orchestrator.py:847:        state["tool"] = outcome.tool_used or ""
+core\orchestrator.py:848:        state["verified"] = bool(outcome.verified)
+core\orchestrator.py:849:        state["mode"] = outcome.mode
+core\orchestrator.py:850:        state["route"] = understanding.route.value
+core\orchestrator.py:851:        if outcome.needs_confirmation:
+core\orchestrator.py:852:            state["confirmation_id"] = getattr(outcome, "confirmation_id", None)
+core\orchestrator.py:853:            state["needs_confirmation"] = True
+core\orchestrator.py:854:        return self._stamp_latency(state, request_started, "background" if run_background else "fast")
+core\orchestrator.py:884:    def answer_confirmation(self, confirmation_id: str, approved: bool) -> Optional[JarvisState]:
+core\orchestrator.py:888:            confirmation_id: id из состояния/события подтверждения.
+core\orchestrator.py:894:        outcome = self._agent.answer_confirmation(confirmation_id, approved)
+core\orchestrator.py:910:                    technical_message="confirmation output was empty",
+core\orchestrator.py:916:        state: JarvisState = self._new_state("")
+core\orchestrator.py:917:        state["response"] = text
+core\orchestrator.py:918:        state["tts_text"] = spoken
+core\orchestrator.py:919:        state["assistant_output"] = output.to_dict()
+core\orchestrator.py:920:        state["tool"] = outcome.tool_used or ""
+core\orchestrator.py:921:        state["verified"] = bool(outcome.verified)
+core\orchestrator.py:922:        state["mode"] = outcome.mode
+core\orchestrator.py:923:        if outcome.needs_confirmation:
+core\orchestrator.py:924:            state["confirmation_id"] = getattr(outcome, "confirmation_id", None)
+core\orchestrator.py:925:            state["needs_confirmation"] = True
+core\orchestrator.py:926:        return state
+core\orchestrator.py:1053:    def _durable_mission_runner(self, mission: Mission, cancel: threading.Event) -> str:
+core\orchestrator.py:1066:        return self._mission_runner(mission, cancel)
+core\orchestrator.py:1068:    def _mission_runner(self, mission: Mission, cancel: threading.Event) -> str:
+core\orchestrator.py:1080:        result_text = self._agent.run_mission(mission, cancel)
+core\orchestrator.py:1087:                    claim="mission desired state verified" if verified else "mission requires verification",
+core\orchestrator.py:1090:                    expected_state={"verified": True},
+core\orchestrator.py:1091:                    observed_state={"verified": verified, "status": mission.status.value},
+core\orchestrator.py:1099:                    observed_state={"verified": verified, "status": mission.status.value},
+core\orchestrator.py:1103:        if not cancel.is_set():
+core\orchestrator.py:1106:                pending=[] if verified else ["mission desired state"],
+core\orchestrator.py:1111:        if not cancel.is_set():
+core\orchestrator.py:1143:    def cancel_mission(self, task_id: str) -> bool:
+core\orchestrator.py:1145:        return self._runtime.cancel(task_id)
+core\orchestrator.py:1152:                self._cognitive.state.current_goal = mission.goal
+core\orchestrator.py:1153:                self._cognitive.state.active_task = mission.current_step or ""
+core\orchestrator.py:1154:                self._cognitive.state.active_mission_id = mission.task_id
+core\orchestrator.py:1155:                self._cognitive.state.mission_state = "paused"
+core\orchestrator.py:1204:    def _maybe_execute_tool(self, state: JarvisState) -> Optional[ActionResult]:
+core\orchestrator.py:1213:        response = state.get("response", "")
+core\orchestrator.py:1232:                state=state,
+core\orchestrator.py:1239:            state["response"] = clean_response
+core\orchestrator.py:1252:        state: JarvisState,
+core\orchestrator.py:1268:        self._session.to_state(state)
+core\orchestrator.py:1271:        state = self._memory.retrieve(state)
+core\orchestrator.py:1274:        state = self._council.route(state)
+core\orchestrator.py:1275:        return state
+core\orchestrator.py:1347:        state = self._new_state(user_text)
+core\orchestrator.py:1351:            self._session.to_state(state)
+core\orchestrator.py:1354:        state["response"] = response
+core\orchestrator.py:1355:        state["tts_text"] = spoken
+core\orchestrator.py:1356:        state["assistant_output"] = output.to_dict()
+core\orchestrator.py:1357:        state["cognitive_state"] = self._cognitive.state.to_safe_dict()
+core\orchestrator.py:1358:        state["mode"] = mode
+core\orchestrator.py:1359:        state["verified"] = verified
+core\orchestrator.py:1360:        return state
+core\orchestrator.py:1388:            return str(self._warmup_diagnostics.get("state", "starting"))
+core\orchestrator.py:1396:        return str(self._warmup_diagnostics.get("state", "starting"))
+jarvis\src\bridge\TTSController.ts:1:/** Browser UI mirror of backend TTS state; audio remains owned by Python/Piper. */
+jarvis\src\bridge\TTSController.ts:3:  private speaking = false;
+jarvis\src\bridge\TTSController.ts:4:  start(): void { this.speaking = true; }
+jarvis\src\bridge\TTSController.ts:5:  interrupt(): void { this.speaking = false; }
+jarvis\src\bridge\TTSController.ts:6:  finish(): void { this.speaking = false; }
+jarvis\src\bridge\TTSController.ts:7:  get active(): boolean { return this.speaking; }
+core\personality\engine.py:67:            return f"Сэр, продолжим {subject}?"
+core\personality\engine.py:73:        return f"Сэр, продолжим: {task}?" if task else "Сэр, продолжим прошлую задачу?"
+core\personality\engine.py:75:    def prompt_fragment(self, style: StyleProfile,
+core\personality\communication.py:1:"""Context-aware conversion of task state into a bounded style profile."""
+core\personality\models.py:42:    address: str = "сэр"
+core\personality\models.py:64:    likes_confirmation: bool = True
+core\personality\models.py:66:    preferred_address: str = "сэр"
+jarvis\src\integrations\backend.ts:36:  listening: 'LISTENING',
+jarvis\src\integrations\backend.ts:53:    emit({ type: `state:${s}` as unknown as BackendEvent['type'], payload: null, timestamp: Date.now() });
+jarvis\src\integrations\backend.ts:94:      content: 'Indexed project documentation',
+jarvis\src\integrations\backend.ts:95:      detail: 'Indexed project documentation',
+jarvis\src\integrations\backend.ts:195:    interrupt(): Promise<void> {
+jarvis\src\integrations\backend.ts:233:/* Expose the state label map for the TitleBar. */
+jarvis\src\integrations\backend.ts:238:/** Transport event channel -> UI entity state. Mirrors the bridge's STATE_MAP. */
+jarvis\src\integrations\backend.ts:240:  'state:thinking': 'thinking',
+jarvis\src\integrations\backend.ts:241:  'state:executing': 'executing',
+jarvis\src\integrations\backend.ts:242:  'state:streaming': 'streaming',
+jarvis\src\integrations\backend.ts:243:  'state:idle': 'idle',
+jarvis\src\integrations\backend.ts:244:  'state:error': 'error',
+jarvis\src\integrations\backend.ts:245:  'state:cloud': 'cloud',
+jarvis\src\integrations\backend.ts:246:  'state:listening': 'listening',
+jarvis\src\integrations\wsBackend.ts:85:/** Реальный локальный транспорт для command/settings/confirmation protocol. */
+jarvis\src\integrations\wsBackend.ts:166:  async interrupt(): Promise<void> {
+jarvis\src\integrations\wsBackend.ts:167:    await this.send({ type: 'interrupt' });
+jarvis\src\integrations\wsBackend.ts:186:  async answerConfirmation(confirmationId: string, approved: boolean): Promise<void> {
+jarvis\src\integrations\wsBackend.ts:187:    await this.send({ type: 'confirm', confirmation_id: confirmationId, approve: approved });
+jarvis\src\integrations\wsBackend.ts:275:    this.emit({ type: 'state:error', payload: null, timestamp: Date.now() });
+jarvis\src\integrations\wsBackend.ts:311:      this.emit({ type: 'state:error', payload: null, timestamp: Date.now() });
+jarvis\src\main.tsx:11:createRoot(document.getElementById('root')!).render(
+jarvis\src\operator\model.ts:9:  state: 'pending' | 'active' | 'complete' | 'failed';
+jarvis\src\operator\model.ts:51:function stepState(step: MissionStep['id'], phase: MissionPhase): MissionStep['state'] {
+jarvis\src\operator\model.ts:60:  return ORDER.map((id) => ({ id, label: STEP_LABELS[id], state: stepState(id, phase) }));
+jarvis\src\operator\model.ts:97:  if (event.type === 'state:error') return 'error';
+jarvis\src\operator\model.ts:98:  if (event.type === 'confirmation:required') return 'verify';
+jarvis\src\operator\model.ts:99:  if (event.type === 'state:executing') {
+jarvis\src\operator\model.ts:131:export function confirmationFromEvent(event: BackendEvent): PendingConfirmation | null {
+jarvis\src\operator\model.ts:132:  if (event.type !== 'confirmation:required') return null;
+jarvis\src\operator\model.ts:135:  const id = typeof payload.confirmationId === 'string' ? payload.confirmationId : '';
+jarvis\src-tauri\src\window_effects.rs:100:async fn backend_interrupt() -> Result<(), String> {
+jarvis\src-tauri\src\window_effects.rs:101:    // CONNECT BACKEND HERE: interrupt running task
+jarvis\src-tauri\src\window_effects.rs:102:    println!("Backend interrupt");
+jarvis\src-tauri\src\window_effects.rs:130:            backend_interrupt,
+core\platform\windows.py:375:            attempts.append("get_toggle_state")
+core\platform\windows.py:445:    def ui_toggle(self, selector: SemanticSelector | dict[str, Any], state: bool | None = None,
+core\platform\windows.py:449:        wanted = (not current) if state is None else bool(state)
+core\platform\windows.py:456:        return {"toggled": observed == wanted, "state": observed, "control": node.to_dict()}
+core\platform\browser_bridge.py:281:    requires_confirmation: bool = False
+core\platform\browser_bridge.py:287:    """Policy boundary; ``confirm=True`` is never an authorization grant."""
+core\platform\browser_bridge.py:290:        "buy", "checkout", "confirm", "login", "order", "pay", "purchase",
+core\platform\browser_bridge.py:301:            or bool(summary.get("requires_confirmation"))
+core\platform\browser_bridge.py:307:            requires_confirmation=risky,
+core\platform\browser_bridge.py:323:        if not assessed.requires_confirmation:
+core\platform\browser_bridge.py:335:                requires_confirmation=True,
+core\platform\browser_bridge.py:346:    requires_confirmation: bool = False
+core\platform\browser_bridge.py:348:    observed_state: Mapping[str, Any] | None = None
+core\platform\browser_bridge.py:366:            "requires_confirmation": self.requires_confirmation,
+core\platform\browser_bridge.py:368:            "observed_state": dict(self.observed_state or {}),
+core\platform\browser_bridge.py:615:        """Observe a stable post-action state, tolerating navigation races."""
+core\platform\browser_bridge.py:678:            "detail": "expected state matched" if ok else "expected state mismatch",
+core\platform\browser_bridge.py:707:            False, False, decision.requires_confirmation, decision.blocked_reason,
+core\platform\browser_bridge.py:717:        confirm: bool = False,
+core\platform\browser_bridge.py:718:        confirmation_grant: ConfirmationGrant | Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:719:        expected_state: Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:722:        del confirm  # compatibility hint; policy/grant is authoritative
+core\platform\browser_bridge.py:739:        decision = self._authorize("click", resolved, confirmation_grant)
+core\platform\browser_bridge.py:744:                raw = self.provider.click(target, confirm=True)
+core\platform\browser_bridge.py:746:                raw = self.provider.click(resolved.selector, confirm=True)
+core\platform\browser_bridge.py:749:                False, False, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:755:                False, False, decision.requires_confirmation, "EXECUTION_FAILED",
+core\platform\browser_bridge.py:768:        if expected_state is not None:
+core\platform\browser_bridge.py:769:            verification = self._verify(expected_state, observed, method="post_click_observation")
+core\platform\browser_bridge.py:782:                    "page state changed after click" if page_changed
+core\platform\browser_bridge.py:783:                    else "clicked element received focus or changed state" if semantic_change
+core\platform\browser_bridge.py:788:            bool(verification["ok"]), True, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:797:        confirmation_grant: ConfirmationGrant | Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:798:        expected_state: Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:809:        decision = self._authorize("press", resolved, confirmation_grant)
+core\platform\browser_bridge.py:819:                False, False, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:825:                False, False, decision.requires_confirmation, "EXECUTION_FAILED",
+core\platform\browser_bridge.py:833:                False, True, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:838:        verification = self._verify(expected_state, observed, method="post_key_observation")
+core\platform\browser_bridge.py:840:            bool(verification["ok"]), True, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:849:        confirmation_grant: ConfirmationGrant | Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:850:        expected_state: Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:868:        decision = self._authorize("type", resolved, confirmation_grant)
+core\platform\browser_bridge.py:878:                False, False, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:884:                False, False, decision.requires_confirmation, "EXECUTION_FAILED",
+core\platform\browser_bridge.py:889:        if expected_state is not None:
+core\platform\browser_bridge.py:890:            verification = self._verify(expected_state, observed, method="post_type_observation")
+core\platform\browser_bridge.py:907:            bool(verification["ok"]), True, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:955:        confirm: bool = False,
+core\platform\browser_bridge.py:956:        confirmation_grant: ConfirmationGrant | Mapping[str, Any] | None = None,
+core\platform\browser_bridge.py:959:        del confirm
+core\platform\browser_bridge.py:976:        decision = self._authorize("download", resolved, confirmation_grant)
+core\platform\browser_bridge.py:983:                confirm=True,
+core\platform\browser_bridge.py:987:                False, False, decision.requires_confirmation, None,
+core\platform\browser_bridge.py:994:            bool(taken), taken, decision.requires_confirmation, None if taken else "EXECUTION_FAILED",
+core\platform\browser.py:39:        "buy", "checkout", "confirm", "login", "order", "pay", "purchase",
+core\platform\browser.py:89:              return Array.from(document.body.querySelectorAll('*')).filter(visible).slice(0, limit).map(el => ({
+core\platform\browser.py:135:            requires_confirmation: false
+core\platform\browser.py:147:    def _requires_confirmation(self, metadata: dict[str, Any]) -> bool:
+core\platform\browser.py:156:              *, confirm: bool = False) -> dict[str, Any]:
+core\platform\browser.py:158:            return self.engine.click(target, confirm=confirm)
+core\platform\browser.py:161:        requires = self._requires_confirmation(metadata)
+core\platform\browser.py:162:        if requires and not confirm:
+core\platform\browser.py:163:            return {"ok": True, "requires_confirmation": True,
+core\platform\browser.py:168:        focused = bool(locator.first.evaluate("el => document.activeElement === el"))
+core\platform\browser.py:170:        return {"ok": True, "requires_confirmation": requires,
+core\platform\browser.py:214:        locator.first.wait_for(state="visible", timeout=max(0, float(timeout)) * 1000)
+core\platform\browser.py:222:            page.wait_for_load_state(
+core\platform\browser.py:241:                 directory: Path | str | None = None, confirm: bool = False) -> dict[str, Any]:
+core\platform\browser.py:243:            return self.engine.click(target, confirm=confirm)
+core\platform\browser.py:246:        requires = self._requires_confirmation(metadata)
+core\platform\browser.py:247:        if requires and not confirm:
+core\platform\browser.py:248:            return {"ok": True, "requires_confirmation": True, "action_taken": False}
+core\platform\browser.py:263:                "action_taken": True, "requires_confirmation": requires}
+jarvis\src\stores\sessionStore.tsx:5: * legitimate client-side organizational layer persisted to localStorage.
+jarvis\src\stores\sessionStore.tsx:12: * session (EVENT_CAP) so localStorage never blows its quota on long transcripts.
+jarvis\src\stores\sessionStore.tsx:27:    localStorage.setItem(key, JSON.stringify(value));
+jarvis\src\stores\sessionStore.tsx:31:        const obj = JSON.parse(localStorage.getItem(key) || '{}') as Record<string, ActivityEvent[]>;
+jarvis\src\stores\sessionStore.tsx:33:        localStorage.setItem(key, JSON.stringify(obj));
+jarvis\src\stores\sessionStore.tsx:57:    const raw = localStorage.getItem(KEY_SESSIONS);
+jarvis\src\stores\sessionStore.tsx:70:    const raw = localStorage.getItem(KEY_EVENTS);
+jarvis\src\stores\sessionStore.tsx:136:    const onVis = () => { if (document.visibilityState === 'hidden') flush(); };
+jarvis\src\stores\sessionStore.tsx:138:    document.addEventListener('visibilitychange', onVis);
+jarvis\src\stores\sessionStore.tsx:141:      document.removeEventListener('visibilitychange', onVis);
+core\operator\mission.py:21:    """Thread-safe user interruption state retained for the active mission."""
+core\operator\mission.py:24:        self.state = "running"
+core\operator\mission.py:33:            if low in {"стоп", "отмени", "cancel", "stop"}:
+core\operator\mission.py:34:                self.state = "cancelled"
+core\operator\mission.py:36:                self.state = "paused"
+core\operator\mission.py:38:                self.state = "running"
+core\operator\mission.py:44:            return {"state": self.state, "current_action": self.current_action,
+core\operator\mission.py:50:            while self.state == "paused":
+core\operator\mission.py:52:            if self.state == "cancelled":
+core\operator\mission.py:53:                raise MissionCancelled("mission cancelled")
+core\operator\mission.py:62:    state: str
+core\operator\mission.py:64:    desired_state: dict[str, Any]
+core\operator\mission.py:101:        desired = dict(interpreted.desired_state)
+core\operator\mission.py:106:                "Сэр, здесь нужен ваш пароль. Введите его — дальше я сам.",
+core\operator\mission.py:129:                        message="Сэр, проверенный источник пока не найден.",
+core\operator\mission.py:140:                        message="Сэр, установка не прошла независимую проверку.",
+core\operator\mission.py:154:            control.checkpoint("observe current application state")
+core\operator\mission.py:179:                    False, "verification_failed", "Сэр, результат не совпал с заданным состоянием.",
+core\operator\mission.py:203:                desired_state=safe_desired,
+core\operator\mission.py:214:                True, "completed", "Готово. Проверяйте, сэр.", safe_desired,
+core\operator\mission.py:222:            return self._failure("cancelled", safe_desired, trace, started,
+core\operator\mission.py:223:                                 message="Понял, сэр. Действие отменено.")
+core\operator\mission.py:299:    def _failure(state: str, desired: dict[str, Any], trace: list[dict[str, Any]],
+core\operator\mission.py:302:            False, state, message, desired, {}, {}, {}, action_trace=trace,
+core\operator\reference.py:1:"""Reference → desired state, including adaptive local video analysis."""
+core\operator\reference.py:19:    desired_state: dict[str, Any]
+core\operator\reference.py:36:    desired_state: dict[str, Any]
+core\operator\reference.py:69:            desired_state=dict(analysis.get("desired_state") or {}),
+core\operator\reference.py:157:    """Converts video/image/web/text/structured evidence into state, never clicks."""
+core\operator\reference.py:174:            desired = dict(reference.get("desired_state") or reference.get("settings") or {})
+core\operator\reference.py:178:                desired_state=desired,
+core\operator\reference.py:202:                interpreted.application, interpreted.desired_state, "web",
+core\operator\reference.py:212:            desired_state=result.desired_state,
+core\operator\reference.py:228:            desired_state=dict(analysis.get("desired_state") or {}),
+core\operator\reference.py:289:                                        uncertain_items=["desired_state_not_explicit"])
+jarvis\src\components\Composer.module.css:17:.dragging {
+jarvis\src\integrations\wsProtocol.ts:16:  state?: unknown;
+jarvis\src\integrations\wsProtocol.ts:18:  confirmation_id?: unknown;
+jarvis\src\integrations\wsProtocol.ts:52:  if (kind === 'state') {
+jarvis\src\integrations\wsProtocol.ts:53:    const state = asString(envelope.state);
+jarvis\src\integrations\wsProtocol.ts:54:    return state ? [{ type: `state:${state}`, payload: null, timestamp: receivedAt }] : [];
+jarvis\src\integrations\wsProtocol.ts:68:  if (kind === 'confirmation_required') {
+jarvis\src\integrations\wsProtocol.ts:69:    const confirmationId = asString(envelope.confirmation_id);
+jarvis\src\integrations\wsProtocol.ts:70:    if (!confirmationId) return [];
+jarvis\src\integrations\wsProtocol.ts:72:      type: 'confirmation:required',
+jarvis\src\integrations\wsProtocol.ts:74:        confirmationId,
+jarvis\src\integrations\wsProtocol.ts:95:        state: asString(envelope.state) ?? 'starting',
+jarvis\src\integrations\wsProtocol.ts:121:    }, { type: 'state:error', payload: null, timestamp: receivedAt }];
+core\operator\setup.py:19:    desired_state_diff → configure → observe → verify → repair → learn``.
+core\operator\setup.py:34:        "desired_state_diff",
+jarvis\src\components\Composer.tsx:4: * Preserves ALL prior behavior: Enter/Shift+Enter, drag-drop, paste-attach,
+jarvis\src\components\Composer.tsx:6: * only if a real backend interrupt exists — no fake control).
+jarvis\src\components\Composer.tsx:9:import { useRef, useState, useCallback, useEffect, type KeyboardEvent, type DragEvent, type ChangeEvent, type CompositionEvent, type ClipboardEvent } from 'react';
+jarvis\src\components\Composer.tsx:28:  const [dragging, setDragging] = useState(false);
+jarvis\src\components\Composer.tsx:60:  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+jarvis\src\components\Composer.tsx:61:    e.preventDefault(); setDragging(false);
+jarvis\src\components\Composer.tsx:69:      className={`${styles.wrap} ${dragging ? styles.dragging : ''} glass-input`}
+jarvis\src\components\Composer.tsx:70:      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+jarvis\src\components\Composer.tsx:71:      onDragLeave={(e) => { e.preventDefault(); setDragging(false); }}
+jarvis\src\components\Background\RimLight.tsx:3: * Cyan/gold ambient edge light that breathes with the entity state.
+jarvis\src\stores\themeStore.tsx:6: * the White Room. Persists to localStorage. Applies everything to
+jarvis\src\stores\themeStore.tsx:48:    const raw = localStorage.getItem(SETTINGS_KEY);
+jarvis\src\stores\themeStore.tsx:58:    const raw = localStorage.getItem(PROFILE_KEY);
+jarvis\src\stores\themeStore.tsx:101:  // Reflect state onto <html> so the CSS theme layer can react.
+jarvis\src\stores\themeStore.tsx:103:    const el = document.documentElement;
+jarvis\src\stores\themeStore.tsx:127:    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+jarvis\src\stores\themeStore.tsx:130:    if (profile) localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+jarvis\src\stores\themeStore.tsx:148:      completeOnboarding: (name, honorific = 'сэр') => {
+jarvis\src\operator\OperatorShell.tsx:21:  messages: PresenceMessage[]; state: PresenceState; mode: UiMode; mission: OperatorMission | null;
+jarvis\src\operator\OperatorShell.tsx:22:  confirmation: PendingConfirmation | null; firstLaunch: boolean; onModeChange: (mode: UiMode) => void;
+jarvis\src\operator\OperatorShell.tsx:28:type VisualState = 'idle' | 'listening' | 'thinking' | 'executing' | 'speaking' | 'success' | 'error' | 'starting';
+jarvis\src\operator\OperatorShell.tsx:48:function visualMeta(props: Pick<Props, 'state' | 'signals' | 'confirmation' | 'connected' | 'runtimeState'>) {
+jarvis\src\operator\OperatorShell.tsx:50:  if (props.runtimeState === 'starting' || props.runtimeState === 'loading_model') return { state: 'starting' as const, label: 'Запуск', detail: 'Модель проходит проверку' };
+jarvis\src\operator\OperatorShell.tsx:51:  if (!props.connected || props.runtimeState === 'unavailable' || props.state === 'error') return { state: 'error' as const, label: 'Ошибка', detail: 'Открой диагностику' };
+jarvis\src\operator\OperatorShell.tsx:52:  if (props.confirmation) return { state: 'executing' as const, label: 'Нужно решение', detail: 'Действие ждёт подтверждения' };
+jarvis\src\operator\OperatorShell.tsx:53:  if (latest && /failed|error/i.test(latest.status)) return { state: 'error' as const, label: 'Не выполнено', detail: latest.content };
+jarvis\src\operator\OperatorShell.tsx:54:  if (isVerified(latest)) return { state: 'success' as const, label: 'Готово', detail: 'Результат подтверждён' };
+jarvis\src\operator\OperatorShell.tsx:55:  if (props.state === 'listening') return { state: 'listening' as const, label: 'Слушаю', detail: 'Говори' };
+jarvis\src\operator\OperatorShell.tsx:56:  if (props.state === 'thinking') return { state: 'thinking' as const, label: 'Думаю', detail: 'Собираю ответ' };
+jarvis\src\operator\OperatorShell.tsx:57:  if (props.state === 'executing') return { state: 'executing' as const, label: 'Выполняю', detail: 'Работает инструмент' };
+jarvis\src\operator\OperatorShell.tsx:58:  if (props.state === 'speaking') return { state: 'speaking' as const, label: 'Отвечаю', detail: 'Формирую реплику' };
+jarvis\src\operator\OperatorShell.tsx:59:  return { state: 'idle' as const, label: 'Готов', detail: 'Можно говорить или писать' };
+jarvis\src\operator\OperatorShell.tsx:62:function AICore({ state, compact = false }: { state: VisualState; compact?: boolean }) {
+jarvis\src\operator\OperatorShell.tsx:63:  return <div className={`aiCore ${compact ? 'compact' : ''}`} data-state={state} aria-label={`JARVIS: ${state}`}>
+jarvis\src\operator\OperatorShell.tsx:74:  const [value, setValue] = useState(''); const busy = props.state === 'thinking' || props.state === 'executing';
+jarvis\src\operator\OperatorShell.tsx:127:  return <section className="coreDeck" data-state={meta.state}><div className="depthGrid" /><div className="particleField">{Array.from({ length: 18 }, (_, index) => <i key={index} style={{ '--i': index } as CSSProperties} />)}</div><div className="coreAssembly"><AICore state={meta.state} /><div className="stateCopy"><span className="stateDot" /><div><strong>{meta.label}</strong><p>{meta.detail}</p></div></div></div>{latest && <div className="activeTrace"><span>{toolLabel(latest.tool, latest.kind)}</span><p>{isVerified(latest) ? 'Результат подтверждён' : latest.status}</p><i data-ok={isVerified(latest)} /></div>}</section>;
+jarvis\src\operator\OperatorShell.tsx:158:  return <header className="topBar" data-tauri-drag-region><div className="brandMark"><span>J</span><div><strong>JARVIS</strong><small>AI OPERATING SYSTEM</small></div></div><div className="realStatus"><StatusItem icon={<Activity size={13} />} label="Состояние" value={meta.label} tone={meta.state} /><StatusItem icon={<Layers3 size={13} />} label="Мозг" value={model} /><StatusItem icon={<Globe2 size={13} />} label="Связь" value={props.connected ? provider : 'нет'} tone={props.connected ? 'success' : 'error'} />{latency && <StatusItem icon={<Zap size={13} />} label="Ответ" value={latency} />}</div><div className="windowTools"><time>{clock}</time><button onClick={onDiagnostics} aria-label="Диагностика"><Settings2 size={15} /></button><button onClick={onTheme} aria-label="Тема"><Palette size={15} /></button><button onClick={() => props.onModeChange('presence')} aria-label="Presence Mode"><Minimize2 size={15} /></button><button onClick={() => windowAction('minimize')} aria-label="Свернуть"><span>—</span></button><button onClick={() => windowAction('maximize')} aria-label="Развернуть"><Square size={12} /></button><button className="close" onClick={() => windowAction('close')} aria-label="Закрыть"><X size={15} /></button></div></header>;
+jarvis\src\operator\OperatorShell.tsx:160:function Confirmation({ props }: { props: Props }) { if (!props.confirmation) return null; return <div className="confirmationBar"><div><strong>Подтвердить действие</strong><span>{props.confirmation.prompt}</span></div><button onClick={() => props.onConfirm(true)}><Check size={14} /> Разрешить</button><button onClick={() => props.onConfirm(false)}><X size={14} /> Отмена</button></div>; }
+jarvis\src\operator\OperatorShell.tsx:164:  return <main className="aiosWorkspace" data-state={meta.state}><div className="ambientLayers"><i /><i /><i /></div><TopBar props={props} onTheme={() => setTheme((value) => !value)} onDiagnostics={() => setDiagnostics((value) => !value)} /><section className="workspaceGrid" data-context={hasContext}><ConversationPane props={props} /><CoreDeck props={props} /><ContextCards signals={props.signals} /></section><CommandDock props={props} /><Confirmation props={props} /><ThemeEngine open={theme} onClose={() => setTheme(false)} /><Diagnostics open={diagnostics} data={props.runtimeDiagnostics} onClose={() => setDiagnostics(false)} /></main>;
+jarvis\src\operator\OperatorShell.tsx:168:  return <main className="aiosPresence" data-state={meta.state}><div className="presenceGlow" /><header data-tauri-drag-region><div className="presenceBrand"><i /><strong>JARVIS</strong><span>{props.connected ? 'на связи' : 'нет связи'}</span></div><nav><button onClick={() => setTheme((value) => !value)}><Palette size={15} /></button><button onClick={() => props.onModeChange('command_center')}><Maximize2 size={15} /></button><button onClick={() => windowAction('close')}><X size={15} /></button></nav></header><section className="presenceCore"><AICore state={meta.state} compact /><div className="presenceState"><strong>{meta.label}</strong><span>{meta.detail}</span></div></section><MessageList messages={props.messages} compact /><div className="presenceQuick"><button onClick={props.onVoiceListen}><Mic size={15} /> Слушать</button><button onClick={() => props.onSend('покажи состояние системы')}><Gauge size={15} /> Система</button><button onClick={() => props.onSend('поставь музыку')}><Music2 size={15} /> Музыка</button></div><CommandDock props={props} compact /><ThemeEngine open={theme} onClose={() => setTheme(false)} /></main>;
+core\repair.py:328:        - для относительных путей пытается искать в documents_dir;
+jarvis\src\types\index.ts:9: *  - Session system (client-side, localStorage)
+jarvis\src\types\index.ts:147:/** Alias retained so the existing state machine keeps compiling. */
+jarvis\src\types\index.ts:167:/* ===== Pending HIGH-risk confirmation (from backend) ===== */
+jarvis\src\types\index.ts:180:  interrupt(): Promise<void>;
+jarvis\src\types\index.ts:182:  answerConfirmation(confirmationId: string, approved: boolean): Promise<void>;
+jarvis\src\types\index.ts:204:  | 'state:thinking'
+jarvis\src\types\index.ts:205:  | 'state:executing'
+jarvis\src\types\index.ts:206:  | 'state:error'
+jarvis\src\types\index.ts:207:  | 'state:idle'
+jarvis\src\types\index.ts:208:  | 'state:streaming'
+jarvis\src\types\index.ts:209:  | 'state:cloud'
+jarvis\src\types\index.ts:210:  | 'state:listening'
+jarvis\src\types\index.ts:221:  | 'confirmation:required';
+core\proactive\proactor.py:23:from core.state import new_state
+core\proactive\proactor.py:102:        self._speak_proactive(text, source="reminder")
+core\proactive\proactor.py:142:            self._speak_proactive(prompt, source="idle")
+core\proactive\proactor.py:145:    def _speak_proactive(self, prompt: str, source: str) -> None:
+core\proactive\proactor.py:148:            state = new_state(prompt)
+core\proactive\proactor.py:149:            state = self._council.route(state)
+core\proactive\proactor.py:150:            response = state.get("response", "").strip()
+core\operator\software.py:215:    """Installs known types and proves real installed/launch/window state."""
+jarvis\src\styles\globals.css:60:.drag-region { -webkit-app-region: drag; -webkit-user-select: none; user-select: none; }
+jarvis\src\styles\globals.css:61:button, input, textarea, [contenteditable] { -webkit-app-region: no-drag; }
+jarvis\src\components\ConfirmationCard.tsx:10:  confirmation: PendingConfirmation;
+jarvis\src\components\ConfirmationCard.tsx:15:export function ConfirmationCard({ confirmation, timeoutMs = 30000, onResolve }: Props) {
+jarvis\src\components\ConfirmationCard.tsx:17:  const riskLevel = confirmation.risk?.level ?? 'high';
+jarvis\src\components\ConfirmationCard.tsx:54:        <p className={styles.prompt}>{confirmation.prompt}</p>
+jarvis\src\components\ConfirmationCard.tsx:56:        {confirmation.tool && (
+jarvis\src\components\ConfirmationCard.tsx:57:          <p className={styles.tool}>Инструмент: <code>{confirmation.tool}</code></p>
+core\research.py:233:            cancel: Optional[threading.Event] = None) -> ResearchReport:
+core\research.py:239:        cancel = cancel or threading.Event()
+core\research.py:241:        context = ToolContext(user_id="default", settings=self._settings, state=None)
+core\research.py:288:        if cancel.is_set():
+core\research.py:295:            if cancel.is_set():
+core\research.py:356:            root = self._settings.paths.resolved("documents_dir")
+core\router\intent_router.py:65:        "папку", "папка", "директори", "file", "document", "read file",
+core\router\council.py:3:``CouncilRouter.route(state)`` — единая точка входа для одного витка
+core\router\council.py:18:логируется и записывается в ``state["error"]`` + ``state["response"]``.
+core\router\council.py:37:from core.state import JarvisState, Message
+core\router\council.py:47:    "Сэр, внешние модели сейчас недоступны. Отвечаю в меру своих локальных "
+core\router\council.py:94:    def route(self, state: JarvisState) -> JarvisState:
+core\router\council.py:98:            state: состояние витка (минимум должен быть ``user_input``).
+core\router\council.py:101:            Тот же объект ``state`` с обновлёнными полями ``intent``,
+core\router\council.py:104:        user_input = (state.get("user_input") or "").strip()
+core\router\council.py:106:            state["error"] = "Пустой ввод пользователя"
+core\router\council.py:107:            state["response"] = "Сэр, я не расслышал команду. Повторите, пожалуйста."
+core\router\council.py:108:            return state
+core\router\council.py:111:        state.setdefault("latency", {})
+core\router\council.py:117:            state["intent"] = intent
+core\router\council.py:118:            state["latency"]["intent"] = round(time.perf_counter() - t0, 4)
+core\router\council.py:124:            state["latency"]["route"] = round(time.perf_counter() - t1, 4)
+core\router\council.py:130:            response = self._generate(state, decision)
+core\router\council.py:131:            state["response"] = response
+core\router\council.py:132:            state["error"] = None
+core\router\council.py:137:            state["error"] = str(exc)
+core\router\council.py:138:            state["response"] = _OFFLINE_FALLBACK
+core\router\council.py:141:                state["tier"] = "fast"
+core\router\council.py:142:                state["response"] = _OFFLINE_FALLBACK + "\n\n" + local.direct(
+core\router\council.py:147:                state["tier"] = "fast"
+core\router\council.py:150:            state["error"] = f"internal: {exc}"
+core\router\council.py:151:            state["response"] = (
+core\router\council.py:152:                "Сэр, произошла внутренняя ошибка при обработке запроса. "
+core\router\council.py:156:        state["latency"]["total"] = round(time.perf_counter() - started, 4)
+core\router\council.py:159:            state.get("tier"), state["latency"]["total"],
+core\router\council.py:161:        return state
+core\router\council.py:167:    def _generate(self, state: JarvisState, decision: Any) -> str:
+core\router\council.py:170:        state["tier"] = tier.value
+core\router\council.py:176:                    user_request=str(state.get("user_input", "")),
+core\router\council.py:185:                state["brain_provider"] = decision.provider
+core\router\council.py:186:                state["brain_model"] = decision.model
+core\router\council.py:187:                state["brain_reason_code"] = decision.reason_code
+core\router\council.py:192:            system = _build_system_prompt(state, self._settings)
+core\router\council.py:193:            messages = _state_to_messages(state)
+core\router\council.py:197:            return self._degrade_to_local(state)
+core\router\council.py:199:    def _degrade_to_local(self, state: JarvisState) -> str:
+core\router\council.py:202:        state["tier"] = "fast"
+core\router\council.py:204:        system = _build_system_prompt(state, self._settings)
+core\router\council.py:205:        messages = _state_to_messages(state)
+core\router\council.py:215:def _state_to_messages(state: JarvisState) -> List[Message]:
+core\router\council.py:220:    messages = list(state.get("short_memory") or [])
+core\router\council.py:221:    if not messages and state.get("user_input"):
+core\router\council.py:222:        messages = [{"role": "user", "content": state["user_input"]}]
+core\router\council.py:226:def _build_system_prompt(state: JarvisState, settings: Settings) -> str:
+core\router\council.py:230:    context = state.get("retrieved_context") or {}
+core\router\local_face.py:26:from core.state import Message
+jarvis\src\components\SettingsPanel.tsx:178:  const [honorific, setHonorific] = useState(profile?.honorific ?? 'сэр');
+jarvis\src\components\SettingsPanel.tsx:287:                onBlur={() => profile && updateProfile({ honorific: honorific.trim() || 'сэр' })}
+jarvis\src\components\SettingsPanel.tsx:288:                placeholder="сэр"
+jarvis\src\components\SettingsPanel.tsx:291:              <p className={styles.hint}>Как J.A.R.V.I.S. обращается к вам (например: сэр).</p>
+core\safety.py:32:    "requires_confirmation",
+core\safety.py:87:    def needs_confirmation(self) -> bool:
+core\safety.py:88:        return self.level.requires_confirmation
+core\safety.py:90:    def confirmation_prompt(self) -> str:
+core\safety.py:95:            f"Сэр, требуется ваше подтверждение{target}: {why}. "
+core\safety.py:104:            "needs_confirmation": self.needs_confirmation,
+core\safety.py:192:def requires_confirmation(goal: str = "", tool: Optional[str] = None,
+core\safety.py:195:    return assess_risk(goal, tool, arguments).needs_confirmation
+jarvis\src\components\TitleBar.module.css:25:.state {
+jarvis\src\components\TitleBar.module.css:33:.stateDot {
+jarvis\src\components\TitleBar.module.css:39:.state[data-state='thinking'] .stateDot,
+jarvis\src\components\TitleBar.module.css:40:.state[data-state='streaming'] .stateDot {
+jarvis\src\components\TitleBar.module.css:43:  animation: statePulse 1.2s ease-in-out infinite;
+jarvis\src\components\TitleBar.module.css:45:.state[data-state='thinking'], .state[data-state='streaming'] { color: var(--accent-cyan); }
+jarvis\src\components\TitleBar.module.css:46:.state[data-state='executing'] .stateDot {
+jarvis\src\components\TitleBar.module.css:49:  animation: statePulse 1.6s ease-in-out infinite;
+jarvis\src\components\TitleBar.module.css:51:.state[data-state='executing'] { color: var(--accent-green); }
+jarvis\src\components\TitleBar.module.css:52:.state[data-state='error'] .stateDot {
+jarvis\src\components\TitleBar.module.css:56:.state[data-state='error'] { color: var(--accent-red); }
+jarvis\src\components\TitleBar.module.css:57:.state[data-state='cloud'] .stateDot {
+jarvis\src\components\TitleBar.module.css:61:.state[data-state='cloud'] { color: var(--accent-gold); }
+jarvis\src\components\TitleBar.module.css:62:@keyframes statePulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+jarvis\src\components\TitleBar.module.css:71:  -webkit-app-region: no-drag;
+core\security\atomic.py:15:# Multiple background mission writers can converge on the same state file.
+jarvis\src\components\CoreSymbol\CoreSymbol.module.css:58:/* ---- states ---- */
+jarvis\src\components\TitleBar.tsx:3: * Minimal frameless header: CoreSymbol + wordmark + live state, window controls.
+jarvis\src\components\TitleBar.tsx:27:    <header className={`${styles.bar} drag-region`} role="banner" data-tauri-drag-region>
+jarvis\src\components\TitleBar.tsx:28:      <div className={styles.left} data-tauri-drag-region>
+jarvis\src\components\TitleBar.tsx:29:        <CoreSymbol state={entityState} size={18} />
+jarvis\src\components\TitleBar.tsx:31:        <span className={styles.state} data-state={entityState}>
+jarvis\src\components\TitleBar.tsx:32:          <span className={styles.stateDot} aria-hidden="true" />
+jarvis\src\components\TitleBar.tsx:37:      <div className={styles.center} data-tauri-drag-region />
+jarvis\src\components\TitleBar.tsx:39:      <div className={styles.controls} data-tauri-drag-region="false">
+core\shadow\engine.py:349:    if risk.needs_confirmation:
+core\shadow\engine.py:350:        return "Сейчас разберусь, сэр. Перед опасной операцией потребуется ваше подтверждение."
+core\shadow\engine.py:351:    return "Сейчас разберусь, сэр. Подготовлю безопасный способ и проверю его."
+jarvis\src\components\Sidebar\Sidebar.module.css:33:  -webkit-app-region: no-drag;
+jarvis\src\components\Sidebar\Sidebar.module.css:63:  -webkit-app-region: no-drag;
+jarvis\src\components\Sidebar\Sidebar.module.css:81:  -webkit-app-region: no-drag;
+jarvis\src\components\Sidebar\Sidebar.module.css:134:  -webkit-app-region: no-drag;
+jarvis\src\components\Sidebar\Sidebar.module.css:141:  border-radius: var(--radius-md); -webkit-app-region: no-drag;
+jarvis\src\components\WhiteRoom.module.css:57:.confirm { font-size: var(--text-base); color: #2a3550; max-width: 420px; line-height: var(--leading-relaxed); }
+core\state.py:24:    "new_state",
+core\state.py:72:    documents: List[str]             # фрагменты RAG по файлам
+core\state.py:82:    ``new_state()`` создаёт состояние со всеми ключами и безопасными
+core\state.py:118:def new_state(
+core\state.py:133:    state = JarvisState(
+core\state.py:157:    # Every state-producing path is self-describing.  The local import avoids
+core\state.py:161:        state["intent"] = resolve_keyword_tool(user_input, user_input)
+core\state.py:163:        state["intent"] = None
+core\state.py:164:    return state
+core\state.py:167:def push_message(state: JarvisState, role: Role, content: str,
+core\state.py:169:    """Добавляет сообщение в краткую память состояния (мутирует state).
+core\state.py:178:    memory = state.setdefault("short_memory", [])
+core\state.py:181:        trim_short_memory(state, limit)
+core\state.py:184:def trim_short_memory(state: JarvisState, limit: int) -> None:
+core\state.py:185:    """Обрезает краткую память до ``limit`` последних сообщений (мутирует state)."""
+core\state.py:187:        state["short_memory"] = []
+core\state.py:189:    memory = state.get("short_memory") or []
+core\state.py:191:        state["short_memory"] = memory[-limit:]
+jarvis\src\components\WhiteRoom.tsx:56:          <span className={styles.coreLine}><CoreSymbol state="idle" size={26} /></span>
+jarvis\src\components\WhiteRoom.tsx:66:            <p className={styles.q}>Как к вам обращаться, сэр?</p>
+jarvis\src\components\WhiteRoom.tsx:85:            className={styles.confirm}
+jarvis\src\components\WhiteRoom.tsx:90:            Я буду обращаться к вам «сэр». Это можно изменить в настройках.
+core\task_runtime.py:21:        * явная cancellation     (пользователь отменил)
+core\task_runtime.py:29:    а также: paused / cancelled / failed
+core\task_runtime.py:33:    tool_result, stream_chunk, stream_end, confirmation_required, error,
+core\task_runtime.py:110:    CANCELLED = "cancelled"
+core\task_runtime.py:253:EVENT_CONFIRMATION_REQUIRED = "confirmation_required"
+core\task_runtime.py:372:    attempt_state: Dict[str, Any] = field(default_factory=dict)
+core\task_runtime.py:389:    def cancelled(self) -> bool:
+core\task_runtime.py:466:            "attempt_state": self.attempt_state,
+core\task_runtime.py:503:    cancel / resume / wait / status / list.
+core\task_runtime.py:514:                 world_state: Any = None,
+core\task_runtime.py:534:        self._cancel: Dict[str, threading.Event] = {}
+core\task_runtime.py:539:        self._world_state = world_state
+core\task_runtime.py:544:        # Очередь ожидающих миссий: (mission, runner, cancel, watchdog)
+core\task_runtime.py:589:            runner: исполнитель миссии (получает Mission + cancel Event).
+core\task_runtime.py:603:        cancel = threading.Event()
+core\task_runtime.py:609:            self._cancel[mission.task_id] = cancel
+core\task_runtime.py:615:                self._queue.append((mission, runner, cancel, watchdog))
+core\task_runtime.py:622:            self._start_thread(mission, runner, cancel, watchdog)
+core\task_runtime.py:653:            attempt_state={"attempts": 0, "schedule_revision": 1},
+core\task_runtime.py:657:            self._cancel[mission.task_id] = threading.Event()
+core\task_runtime.py:665:                self._cancel.pop(mission.task_id, None)
+core\task_runtime.py:687:    def set_world_state(self, world_state: Any) -> None:
+core\task_runtime.py:688:        self._world_state = world_state
+core\task_runtime.py:698:                dict(mission.attempt_state), mission.status,
+core\task_runtime.py:703:            mission.attempt_state["schedule_revision"] = int(mission.attempt_state.get("schedule_revision", 0)) + 1
+core\task_runtime.py:704:            mission.attempt_state.pop("scheduled_at", None)
+core\task_runtime.py:712:                mission.trigger, mission.trigger_id, mission.execution_id, mission.attempt_state, mission.status = previous
+core\task_runtime.py:811:                mission.attempt_state.pop("scheduled_at", None)
+core\task_runtime.py:884:        world = self._world_state
+core\task_runtime.py:886:            mission.latest_evidence = {"error": "world state unavailable", "freshness": "unknown"}
+core\task_runtime.py:943:            cancel = self._cancel.setdefault(task_id, threading.Event())
+core\task_runtime.py:944:            if cancel.is_set():
+core\task_runtime.py:955:            mission.attempt_state["attempts"] = int(mission.attempt_state.get("attempts", 0)) + 1
+core\task_runtime.py:985:            self._start_thread(mission, runner, cancel, self._default_watchdog)
+core\task_runtime.py:1001:            mission.attempt_state.pop("scheduled_at", None)
+core\task_runtime.py:1004:        mission.attempt_state["scheduled_at"] = when
+core\task_runtime.py:1023:            and float(mission.attempt_state.get("scheduled_at", -1.0)) == float(when)
+core\task_runtime.py:1042:                      cancel: threading.Event, watchdog: Optional[float]) -> None:
+core\task_runtime.py:1050:            args=(mission, runner, cancel, watchdog),
+core\task_runtime.py:1059:                     cancel: threading.Event, watchdog: Optional[float]) -> None:
+core\task_runtime.py:1063:                     payload={"ack": mission.acknowledgement or "Принято, сэр. Разбираюсь."})
+core\task_runtime.py:1068:                if not cancel.wait(timeout=watchdog):
+core\task_runtime.py:1072:                        cancel.set()
+core\task_runtime.py:1080:            result = runner(mission, cancel)
+core\task_runtime.py:1081:            if cancel.is_set() and mission.status != MissionStatus.COMPLETED:
+core\task_runtime.py:1087:                    mission.set_status(MissionStatus.PAUSED, "runtime shutdown interrupted execution")
+core\task_runtime.py:1089:                    mission.set_status(MissionStatus.CANCELLED, "cancel requested")
+core\task_runtime.py:1092:                    "Execution interrupted by runtime shutdown."
+core\task_runtime.py:1097:            # пользователя. Финализировать НЕЛЬЗЯ — иначе confirmation
+core\task_runtime.py:1110:                    mission.error = "desired state was not verified"
+core\task_runtime.py:1124:            if cancel.is_set():
+core\task_runtime.py:1127:                    mission.error = "Execution interrupted by runtime shutdown."
+core\task_runtime.py:1157:                mission, runner, cancel, watchdog = self._queue.popleft()
+core\task_runtime.py:1159:                if cancel.is_set() or mission.status == MissionStatus.CANCELLED:
+core\task_runtime.py:1162:                nxt = (mission, runner, cancel, watchdog)
+core\task_runtime.py:1170:    def cancel(self, task_id: str) -> bool:
+core\task_runtime.py:1177:            ev = self._cancel.get(task_id)
+core\task_runtime.py:1196:                "cancel requested" + (" (в очереди)" if queued else ""),
+core\task_runtime.py:1201:                log.error("TaskRuntime cancellation persistence failed for %s: %s", task_id, exc)
+core\task_runtime.py:1233:        """Marks a mission paused; cooperative runners inspect this state."""
+core\task_runtime.py:1276:            self._cancel.setdefault(mission.task_id, threading.Event())
+core\task_runtime.py:1351:                    event = self._cancel.get(tid)
+core\task_runtime.py:1355:            self.cancel(tid)
+core\task_runtime.py:1403:                    attempt_state=dict(data.get("attempt_state") or {}),
+core\task_runtime.py:1423:                            "recovery": "execution interrupted by restart; manual resume required",
+core\task_runtime.py:1426:                self._cancel[mission.task_id] = threading.Event()
+core\structured.py:84:        content = self._content_fragment()
+core\structured.py:93:    def _content_fragment(self) -> str:
+core\structured.py:119:            frag = content[: len(content) - cut] if cut else content
+core\structured.py:120:            if not frag:
+core\structured.py:122:            for candidate in (frag, frag.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")):
+jarvis\src\components\Sidebar\Sidebar.tsx:59:          <CoreSymbol state={entityState} size={20} />
+core\trust.py:19:    state: dict[str, Any] = field(default_factory=dict)
+core\trust.py:38:    missing = {key: value for key, value in expected.items() if observation.state.get(key) != value}
+core\trust.py:40:        return VerificationResult(False, "observed state does not match expected state", missing, (observation.source,))
+core\trust.py:41:    return VerificationResult(True, "independently observed desired state", evidence=(observation.source,))
+core\verifier.py:155:    # Путь может быть относительным внутри documents_dir — ищем там.
+core\verifier.py:159:            p = PROJECT_ROOT / "data" / "documents" / Path(cand).name
+core\verifier.py:161:                return VerificationResult(True, "file_exists", f"файл найден в documents: {p}")
+core\verifier.py:162:        except Exception:  # pragma: no cover — защитный путь
+core\verifier.py:574:                                      str(verification.get("detail") or "post-action state observed"))
+core\verifier.py:586:        result.error or "headless browser state is internal evidence only",
+core\ws_server.py:13:    {"type": "confirm",  "confirmation_id": "<id>", "approve": true|false}
+core\ws_server.py:14:    {"type": "interrupt"}
+core\ws_server.py:18:    {"type": "state",    "state": "thinking"|"executing"|"streaming"|"idle"|"error"|"cloud"|"listening"}
+core\ws_server.py:20:    {"type": "confirmation_required", "confirmation_id": "<id>", "prompt": "...", "tool": "...", "risk": {...}}
+core\ws_server.py:25:События миссий (TaskRuntime) транслируются в ``event``/``state``
+core\ws_server.py:27:(mapTransportEvent ожидает типы с префиксом ``state:`` / ``event:``).
+core\ws_server.py:62:except Exception:  # pragma: no cover - optional dep
+core\ws_server.py:81:# Маппинг статусов миссии -> entity state фронтенда
+core\ws_server.py:92:    "cancelled": "idle",
+core\ws_server.py:192:                self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:202:                self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:207:            self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:253:    def _speak(self, output) -> None:
+core\ws_server.py:271:    def _tts_interrupt(self) -> None:
+core\ws_server.py:276:                tts.interrupt()
+core\ws_server.py:278:            log.debug("TTS-interrupt пропущен: %s", exc)
+core\ws_server.py:323:        self._speak(AssistantOutput.natural(text))
+core\ws_server.py:348:            await ws.send(json.dumps({"type": "state", "state": "idle"}))
+core\ws_server.py:351:            # contract while newer clients render a real startup state.
+core\ws_server.py:359:            warmup_state = str(warmup.get("state", "") or "").casefold()
+core\ws_server.py:360:            runtime_state = (
+core\ws_server.py:361:                "ready" if diagnostics.get("warmup_ready") and warmup_state == "ready" else
+core\ws_server.py:362:                "unavailable" if warmup_state == "unavailable" else
+core\ws_server.py:368:                "state": runtime_state,
+core\ws_server.py:372:            if runtime_state == "loading_model":
+core\ws_server.py:386:                    updated_state = (
+core\ws_server.py:387:                        "ready" if updated.get("warmup_ready") and updated_warmup.get("state") == "ready" else
+core\ws_server.py:388:                        "unavailable" if updated_warmup.get("state") == "unavailable" else
+core\ws_server.py:393:                        "state": updated_state,
+core\ws_server.py:394:                        "ready": updated_state == "ready",
+core\ws_server.py:413:        except Exception as exc:  # pragma: no cover - network edge
+core\ws_server.py:417:                readiness_task.cancel()
+core\ws_server.py:700:            self._tts_interrupt()
+core\ws_server.py:703:            # во время модельного inference, и ловим возвращаемый state,
+core\ws_server.py:704:            # чтобы не потерять confirmation_id (P5 §5.6) при синхронном
+core\ws_server.py:754:                        self._emit({"type": "state", "state": "loading_model"})
+core\ws_server.py:755:                        ready_state = wait_ready()
+core\ws_server.py:756:                        if str(ready_state) != "ready":
+core\ws_server.py:764:                            detail = detail or f"state={ready_state}"
+core\ws_server.py:769:                        state = self._orch.handle_input(
+core\ws_server.py:773:                        state = self._orch.handle_input(t)
+core\ws_server.py:774:                    if isinstance(state, dict) and state.get("route"):
+core\ws_server.py:780:                            "route": state["route"],
+core\ws_server.py:782:                    if isinstance(state, dict) and state.get("mission_id"):
+core\ws_server.py:788:                            "mission_id": state["mission_id"],
+core\ws_server.py:790:                    if isinstance(state, dict) and state.get("tool"):
+core\ws_server.py:791:                        tool_name = str(state.get("tool") or "")
+core\ws_server.py:792:                        verified = bool(state.get("verified"))
+core\ws_server.py:793:                        output = state.get("assistant_output")
+core\ws_server.py:819:                                    "content": str(state.get("response") or ""),
+core\ws_server.py:827:                    if isinstance(state, dict) and state.get("assistant_output"):
+core\ws_server.py:832:                            "output": state["assistant_output"],
+core\ws_server.py:834:                    if isinstance(state, dict) and state.get("needs_confirmation"):
+core\ws_server.py:836:                            "type": "confirmation_required",
+core\ws_server.py:837:                            "confirmation_id": state.get("confirmation_id"),
+core\ws_server.py:838:                            "prompt": state.get("response", ""),
+core\ws_server.py:842:                        self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:851:                        except Exception:  # pragma: no cover
+core\ws_server.py:878:                        self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:891:        elif mtype == "confirm":
+core\ws_server.py:892:            cid = msg.get("confirmation_id")
+core\ws_server.py:899:                def _dispatch_confirm(cid_: str, approve_: bool) -> None:
+core\ws_server.py:901:                        state = self._orch.answer_confirmation(cid_, approve_)
+core\ws_server.py:902:                        if not isinstance(state, dict):
+core\ws_server.py:904:                        tool_name = str(state.get("tool") or "")
+core\ws_server.py:905:                        verified = bool(state.get("verified"))
+core\ws_server.py:906:                        output = state.get("assistant_output")
+core\ws_server.py:933:                                        "content": str(state.get("response") or ""),
+core\ws_server.py:943:                        if state.get("needs_confirmation"):
+core\ws_server.py:945:                                "type": "confirmation_required",
+core\ws_server.py:946:                                "confirmation_id": state.get("confirmation_id"),
+core\ws_server.py:947:                                "prompt": state.get("response", ""),
+core\ws_server.py:951:                        self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:957:                    # executor future so the confirmation is delivered before
+core\ws_server.py:959:                    await loop.run_in_executor(None, _dispatch_confirm, cid, approve)
+core\ws_server.py:961:                    _dispatch_confirm(cid, approve)
+core\ws_server.py:962:        elif mtype == "interrupt":
+core\ws_server.py:966:                    self._orch.cancel_mission(m.task_id)
+core\ws_server.py:967:            except Exception as exc:  # pragma: no cover
+core\ws_server.py:968:                log.debug("interrupt error: %s", exc)
+core\ws_server.py:972:            self._tts_interrupt()
+core\ws_server.py:987:                self._speak(text)
+core\ws_server.py:1007:                except Exception as exc:  # pragma: no cover - disk edge
+core\ws_server.py:1036:            except Exception:  # pragma: no cover - dropped/медленный клиент
+core\ws_server.py:1048:        except Exception:  # pragma: no cover - loop закрыт
+core\ws_server.py:1060:            self._emit({"type": "state", "state": "thinking"})
+core\ws_server.py:1062:            self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:1064:            self._emit({"type": "state", "state": "error"})
+core\ws_server.py:1124:                "type": "confirmation_required",
+core\ws_server.py:1125:                "confirmation_id": payload.get("confirmation_id"),
+core\ws_server.py:1130:            self._emit({"type": "state", "state": "idle"})
+core\ws_server.py:1138:                if payload.get("status") == "cancelled":
+core\ws_server.py:1220:            except Exception:  # pragma: no cover
+jarvis\src\components\CoreSymbol\CoreSymbol.tsx:21:  state?: EntityState;
+jarvis\src\components\CoreSymbol\CoreSymbol.tsx:25:export function CoreSymbol({ state = 'idle', size = 18 }: Props) {
+jarvis\src\components\CoreSymbol\CoreSymbol.tsx:26:  const cls = STATE_CLASS[state] ?? styles.idle;
+core\__init__.py:4:    * ``core.state``   — контракт состояния графа (Часть 1);
+core\understanding\semantic.py:127:            "отмени": "cancel", "поставь": "pause", "приостанов": "pause",
+core\understanding\semantic.py:269:            "expires_at": expires.isoformat(), "storage": "mission_context",
+core\understanding\semantic.py:378:            if action == "cancel":
+core\understanding\semantic.py:379:                self.runtime.cancel(mission.task_id)
+core\understanding\quick_answer.py:104:    "confirm this search was made by a human",
+core\utils\model_manager.py:136:        cancel: Optional[threading.Event] = None,
+core\utils\model_manager.py:162:                artifact, target, progress=progress, cancel=cancel,
+core\utils\model_manager.py:174:        cancel: Optional[threading.Event],
+core\utils\model_manager.py:184:            artifact, part, progress=progress, cancel=cancel, timeout_sec=timeout_sec,
+core\utils\model_manager.py:216:        cancel: Optional[threading.Event],
+core\utils\model_manager.py:243:                        if cancel is not None and cancel.is_set():
+core\utils\model_manager.py:273:        state: str,
+core\utils\model_manager.py:284:                "state": state,
+core\utils\model_manager.py:426:        # Копируем в data/models/piper/
+core\utils\model_manager.py:427:        piper_dir = self._settings.models_dir / "piper"
+core\utils\model_manager.py:428:        piper_dir.mkdir(parents=True, exist_ok=True)
+core\utils\model_manager.py:430:        dst_onnx = piper_dir / src_onnx.name
+core\utils\model_manager.py:431:        dst_json = piper_dir / src_json.name
+core\utils\model_manager.py:440:        # Обновляем piper_voices в конфиге
+core\utils\model_manager.py:445:        voices = voice_cfg.get("piper_voices", [])
+core\utils\model_manager.py:449:            "model_path": f"data/models/piper/{src_onnx.name}",
+core\utils\model_manager.py:451:            "speaker_id": 0,
+core\utils\model_manager.py:456:        voice_cfg["piper_voices"] = voices
+core\utils\model_manager.py:459:        if not voice_cfg.get("piper_model_path") or language == "en":
+core\utils\model_manager.py:460:            voice_cfg["piper_model_path"] = f"data/models/piper/{src_onnx.name}"
+core\utils\model_manager.py:474:        voices = voice_cfg.get("piper_voices", [])
+core\utils\model_manager.py:477:        voice_cfg["piper_voices"] = voices
+core\utils\model_manager.py:479:        # Если удалили основной голос, обнуляем piper_model_path
+core\utils\model_manager.py:480:        if voice_cfg.get("piper_model_path", "").endswith(f"{name}.onnx"):
+core\utils\model_manager.py:481:            voice_cfg["piper_model_path"] = ""
+core\utils\model_manager.py:483:                voice_cfg["piper_model_path"] = voices[0]["model_path"]
+core\utils\model_manager.py:534:        voices = voice_cfg.get("piper_voices", [])
+core\utils\model_manager.py:540:                    "speaker_id": v.get("speaker_id", 0),
+core\utils\paths.py:60:    "documents_dir",
+core\utils\paths.py:83:        "documents_dir": data / "documents",
+jarvis\src\components\Markdown\Markdown.tsx:10: *   - paragraphs / line breaks
+jarvis\src\components\Markdown\Markdown.tsx:122:    // paragraph (collect until blank / block start)
+core\voice\speech_renderer.py:53:        if not output.speak or not output.speech_text:
+core\voice\stt.py:3:Реализация поверх ``faster-whisper`` (MIT, быстрая локальная интеграция).
+core\voice\stt.py:11:    * ``stt_enabled = True`` и ``faster-whisper`` установлен ->
+core\voice\stt.py:18:    ``faster-whisper`` (приоритет, MIT, локально, без юр. рисков).
+core\voice\stt.py:45:    "Установите: pip install faster-whisper sounddevice scipy\n"
+core\voice\stt.py:46:    "(faster-whisper — MIT, локальное распознавание без юридических рисков)."
+core\voice\stt.py:49:#: Модель faster-whisper по умолчанию (small — баланс точность/скорость).
+core\voice\stt.py:54:    """Минимальный, но РАБОЧИЙ STT-движок поверх faster-whisper."""
+core\voice\stt.py:79:        """Пробует лениво импортировать faster-whisper (без загрузки модели)."""
+core\voice\stt.py:81:            import faster_whisper  # noqa: F401
+core\voice\stt.py:83:        except Exception as exc:  # pragma: no cover - зависит от окружения
+core\voice\stt.py:84:            log.debug("faster-whisper недоступен: %s", exc)
+core\voice\stt.py:99:            from faster_whisper import WhisperModel
+core\voice\stt.py:100:        except Exception as exc:  # pragma: no cover
+core\voice\stt.py:106:        if model_size.startswith("faster-whisper-"): model_size = model_size.removeprefix("faster-whisper-")
+core\voice\stt.py:172:        except Exception as exc:  # pragma: no cover
+core\voice\stt.py:263:        временный файл. Полноценный VAD-streaming — расширение на будущее.
+core\voice\stt.py:291:    """Optional VAD boundary. Uses webrtcvad when installed, otherwise silence-safe."""
+core\voice\output.py:44:    speak: bool = True
+core\voice\output.py:56:        return cls(display_text, None, debug=debug, error=error, speak=False)
+core\voice\output.py:64:            "speak": self.speak,
+core\voice\output.py:76:            "Сэр, возникла проблема со связью. Попробую ещё раз позже.",
+core\voice\output.py:78:            "Сэр, здесь возникла проблема. Я пока не смог её обойти.",
+core\voice\output.py:82:            "Сэр, здесь нужно ваше подтверждение.",
+core\voice\output.py:85:            "Сэр, здесь что-то пошло не так. Я пока не смог это обойти.",
+core\voice\output.py:94:                speak=False,
+core\voice\output.py:102:            speak=bool(speech),
+core\voice\output.py:135:            error=mapped.error, speak=mapped.speak, speech_mode="normal",
+core\voice\output.py:137:    if bool(getattr(outcome, "needs_confirmation", False)):
+core\voice\output.py:144:            error=mapped.error, speak=mapped.speak, speech_mode="focused",
+core\voice\output.py:146:    speech_mode = "focused" if mode in {"capability", "tool", "confirmation_required"} else "normal"
+core\voice\tts.py:6:Если piper_binary_path / piper_model_path не найдены — ``is_available()`` = False,
+core\voice\tts.py:7:``speak()`` логирует warning и не падает (текстовый режим остаётся рабочим).
+core\voice\tts.py:40:        speaker_id: int = 0,
+core\voice\tts.py:49:        self.speaker_id = speaker_id
+core\voice\tts.py:61:            settings: конфигурация (voice.piper_binary_path, voice.piper_model_path,
+core\voice\tts.py:62:                      voice.piper_voices - список дополнительных голосов).
+core\voice\tts.py:68:        self._provider = str(getattr(self._voice_settings, "provider", "piper")).lower()
+core\voice\tts.py:77:            self._provider == "piper" and self._binary is not None
+core\voice\tts.py:94:        ``piper`` из PATH не является стабильной зависимостью: пакет Piper
+core\voice\tts.py:100:        if voice and getattr(voice, "piper_binary_path", None):
+core\voice\tts.py:101:            p = Path(voice.piper_binary_path).expanduser()
+core\voice\tts.py:110:        # installer places it beside llama-server under runtime/piper, so the
+core\voice\tts.py:114:            models_dir.parent / "runtime" / "piper" / "piper.exe",
+core\voice\tts.py:115:            models_dir.parent.parent / "runtime" / "piper" / "piper.exe",
+core\voice\tts.py:119:            bundled_candidates.append(Path(home) / "runtime" / "piper" / "piper.exe")
+core\voice\tts.py:126:            Path.home() / ".local" / "bin" / "piper.exe",
+core\voice\tts.py:127:            Path("C:/Program Files/piper/piper.exe"),
+core\voice\tts.py:128:            Path("C:/Program Files (x86)/piper/piper.exe"),
+core\voice\tts.py:137:        discovered = shutil.which("piper")
+core\voice\tts.py:145:        if not voice_cfg or self._provider != "piper":
+core\voice\tts.py:149:        main_model = getattr(voice_cfg, "resolved_primary_piper_model", None)
+core\voice\tts.py:151:            main_model = getattr(voice_cfg, "resolved_piper_model", None)
+core\voice\tts.py:180:                speaker_id=getattr(voice_cfg, "piper_speaker_id", 0),
+core\voice\tts.py:181:                length_scale=getattr(voice_cfg, "piper_length_scale", 1.0) if use_model_tuning else 1.0,
+core\voice\tts.py:182:                noise_scale=getattr(voice_cfg, "piper_noise_scale", 0.667) if use_model_tuning else 0.0,
+core\voice\tts.py:183:                noise_w=getattr(voice_cfg, "piper_noise_w", 0.8) if use_model_tuning else 0.0,
+core\voice\tts.py:200:                    speaker_id=getattr(voice_cfg, "piper_speaker_id", 0),
+core\voice\tts.py:204:        # Дополнительные голоса из piper_voices (если заданы)
+core\voice\tts.py:205:        extra_voices = getattr(voice_cfg, "piper_voices", None)
+core\voice\tts.py:229:                    speaker_id=v.get("speaker_id", 0),
+core\voice\tts.py:237:        # Авто-добавление известных голосов из data/models/piper/
+core\voice\tts.py:238:        piper_dir = self._settings.models_dir / "piper"
+core\voice\tts.py:239:        if piper_dir.exists():
+core\voice\tts.py:240:            for onnx_file in piper_dir.glob("*.onnx"):
+core\voice\tts.py:302:        """True, если piper бинарник и хотя бы одна модель найдены."""
+core\voice\tts.py:341:            "--speaker", str(voice.speaker_id), "--output_file", str(target),
+core\voice\tts.py:374:        log.info("Piper WAV generated: provider=piper voice=%s language=%s rate=%s",
+core\voice\tts.py:403:    def speak(self, text: str, blocking: bool = True, *, rate: float = 1.0,
+core\voice\tts.py:412:            log.debug("speak: пустой текст, пропуск")
+core\voice\tts.py:416:            log.warning("speak: Piper недоступен, текст не озвучен: %s", text[:60])
+core\voice\tts.py:429:    def speak_rendered(self, rendered) -> None:
+core\voice\tts.py:431:        self.speak(rendered.text, blocking=True,
+core\voice\tts.py:456:    def stop_speaking(self) -> None:
+core\voice\tts.py:467:        log.debug("stop_speaking: playback purge requested")
+core\voice\tts.py:478:            "provider": "piper",
+core\voice\tts_queue.py:48:            self._tts.stop_speaking()
+core\voice\tts_queue.py:87:    def interrupt(self) -> None:
+core\voice\tts_queue.py:90:            self._tts.stop_speaking()
+core\voice\tts_queue.py:139:                    speak_rendered = getattr(self._tts, "speak_rendered", None)
+core\voice\tts_queue.py:140:                    if callable(speak_rendered):
+core\voice\tts_queue.py:141:                        speak_rendered(item)
+core\voice\tts_queue.py:143:                        self._tts.speak(item.text, blocking=True)
+core\voice\tts_sanitizer.py:11:покрыть unit-тестом без запуска piper/моделей. Голос должен звучать
+core\voice\tts_sanitizer.py:35:_RE_EVENT = re.compile(r"(?i)\b(event_|mission-|task_id|task_started|confirmation_required)\b")
