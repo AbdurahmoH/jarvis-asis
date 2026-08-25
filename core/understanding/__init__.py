@@ -19,6 +19,13 @@ from __future__ import annotations
 from core.understanding.layer import UnderstandingLayer
 from core.understanding.models import Route, Understanding
 from core.understanding.quick_answer import QuickAnswerEngine, QuickAnswerResult
+from core.understanding.semantic import (
+    NaturalMissionCoordinator,
+    NaturalMissionInterpreter,
+    NaturalMissionResult,
+    SemanticInterpretation,
+    SemanticMode,
+)
 
 __all__ = [
     "UnderstandingLayer",
@@ -26,4 +33,9 @@ __all__ = [
     "Understanding",
     "QuickAnswerEngine",
     "QuickAnswerResult",
+    "NaturalMissionCoordinator",
+    "NaturalMissionInterpreter",
+    "NaturalMissionResult",
+    "SemanticInterpretation",
+    "SemanticMode",
 ]

@@ -1323,6 +1323,17 @@ class TaskRuntime:
             return None
         return self._persistence_dir / f"{task_id}.json"
 
+    def update_context(self, task_id: str, updates: Mapping[str, Any]) -> bool:
+        """Atomically persist semantic/AskOnce context without re-registering triggers."""
+        with self._lock:
+            mission = self._missions.get(task_id)
+            if mission is None or mission.status.is_terminal:
+                return False
+            mission.context.update(dict(updates))
+            mission._touch()
+            self._persist(mission)
+            return True
+
     def shutdown(self) -> None:
         """Stop runtime while preserving durable waiting/paused missions."""
         self.stop_scheduler()

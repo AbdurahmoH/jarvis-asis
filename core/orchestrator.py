@@ -35,7 +35,10 @@ from core.model_router import ModelRouter, classify_conversation, estimate_compl
 from core.research import is_research_goal
 from core.router import CouncilRouter
 from core.router.intent_router import resolve_keyword_tool
-from core.understanding import QuickAnswerEngine, Route, UnderstandingLayer
+from core.understanding import (
+    NaturalMissionCoordinator, NaturalMissionInterpreter, QuickAnswerEngine,
+    Route, SemanticMode, UnderstandingLayer,
+)
 from core.state import JarvisState, ActionResult, new_state, push_message, trim_short_memory
 from core.task_runtime import Mission, MissionStatus, MissionTrigger, TaskEvent, TaskRuntime
 from core.voice import (
@@ -165,6 +168,16 @@ class Orchestrator:
         )
         self._authority_unsubscribe = self._authority.bind_runtime(self._runtime)
         self._agent.attach_authority(self._authority)
+        self._natural_missions = NaturalMissionCoordinator(
+            self._runtime, self._authority,
+            NaturalMissionInterpreter(
+                integrations=self._configured_integrations(),
+                structured_backend=(
+                    self._semantic_brain_interpret
+                    if bool(getattr(settings, "deepseek_brain_mode", False)) else None
+                ),
+            ),
+        )
         from core.living import LivingIntelligence
         self._living = LivingIntelligence(
             settings.data_dir / "living",
@@ -231,6 +244,40 @@ class Orchestrator:
         self._warmup_ready = threading.Event()
         self._intake = UniversalIntake()
         self._tutor = TutorEngine()
+
+    def _configured_integrations(self) -> set[str]:
+        """Return connector names configured in settings, without loading SDKs."""
+        raw = getattr(self._settings, "integrations", None)
+        if isinstance(raw, Mapping):
+            return {
+                str(name).casefold() for name, config in raw.items()
+                if config is True or bool(getattr(config, "configured", False))
+                or (isinstance(config, Mapping) and bool(config.get("configured")))
+            }
+        return set()
+
+    def _semantic_brain_interpret(self, text: str, contract: Mapping[str, Any]) -> Mapping[str, Any]:
+        """One bounded structured Brain call; runtime/policy validate its proposal."""
+        from core.brain import BrainRequest, BrainRole, PrivacyClass
+
+        prompt = (
+            "Return one JSON object matching this interpretation contract. "
+            "Do not add permissions or actions not stated by the user.\n"
+            f"Contract: {json.dumps(dict(contract), ensure_ascii=False)}\n"
+            f"User input: {text}"
+        )
+        result = self._brain.generate(BrainRequest(
+            user_request=prompt, role=BrainRole.PLANNER,
+            privacy=PrivacyClass.PERSONAL, stage="natural_mission_interpretation",
+            max_tokens=300, temperature=0.0,
+        ))
+        raw = str(result.text or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("semantic interpretation must be an object")
+        return value
 
     def _register_kernel_capabilities(self) -> None:
         """Project the real action registry into the canonical capability graph."""
@@ -595,6 +642,32 @@ class Orchestrator:
         # «синхронно vs фон» ниже (раньше это делали три рассогласованных
         # классификатора — баги A2/A4).
         understanding = self._understanding.understand(text, channel=channel)
+
+        # P2C: one structured semantic pass. Only long-lived/control modes are
+        # consumed here; ordinary conversation and immediate actions continue
+        # through the established one-generation P0 path below.
+        semantic = self._natural_missions.interpreter.interpret(text, source_role="user")
+        if semantic.mode in {
+            SemanticMode.SCHEDULED_MISSION, SemanticMode.CONDITIONAL_MISSION,
+            SemanticMode.DELEGATED_MISSION, SemanticMode.MISSION_CONTROL,
+            SemanticMode.FOLLOW_UP,
+        }:
+            natural = self._natural_missions.handle(
+                text, source_role="user", source_id=f"input-{time.time_ns()}",
+                interpretation=semantic,
+            )
+            state = self._direct_cognitive_response(
+                text, natural.response or natural.clarification,
+                mode=semantic.mode.value, verified=False,
+            )
+            state["semantic_mode"] = semantic.mode.value
+            state["semantic_llm_calls"] = semantic.llm_calls
+            state["required_integration"] = semantic.required_integration
+            state["integration_configured"] = semantic.integration_configured
+            if natural.mission is not None:
+                state["mission_id"] = natural.mission.task_id
+                state["mission_status"] = natural.mission.status.value
+            return self._stamp_latency(state, request_started, "fast")
 
         # Reflex actions must reach the deterministic tool path before the
         # continuity coordinator tries to interpret them as a follow-up to a
