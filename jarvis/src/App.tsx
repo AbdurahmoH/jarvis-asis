@@ -5,8 +5,8 @@ import { StateMachine, presenceFromTransport, type PresenceState } from '@/bridg
 import { TTSController } from '@/bridge/TTSController';
 import { OperatorShell, type LiveSignal } from '@/operator/OperatorShell';
 import {
-  confirmationFromEvent, fixtureMission, reduceMission,
-  type OperatorMission, type UiMode,
+  confirmationFromEvent, fixtureMission, reduceMission, reducePresenceStream,
+  visibleResponseTiming, type OperatorMission, type UiMode,
 } from '@/operator/model';
 import { InputOverlay } from '@/overlay/InputOverlay';
 import { TrayIcon } from '@/presence/TrayIcon';
@@ -29,7 +29,7 @@ function fixtureMessages(fixture: string | null): PresenceMessage[] {
   const now = Date.now();
   return [
     { id: 'fixture-user', role: 'user', text: 'Установи тестовую программу и настрой её.', timestamp: now - 32_000 },
-    { id: 'fixture-jarvis', role: 'jarvis', text: fixture === 'verified' ? 'Готово. Проверяйте, сэр.' : 'Сейчас разберусь, сэр.', timestamp: now - 24_000 },
+    { id: 'fixture-jarvis', role: 'jarvis', text: fixture === 'verified' ? 'Готово. Результат проверен.' : 'Сейчас разберусь.', timestamp: now - 24_000 },
   ];
 }
 
@@ -55,6 +55,7 @@ function App() {
   const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<Record<string, unknown>>({});
   const [signals, setSignals] = useState<LiveSignal[]>([]);
   const streaming = useRef<string | null>(null);
+  const turnStartedAt = useRef<number | null>(null);
   const activeTool = useRef<string | null>(null);
   const overlay = isOverlayWindow();
 
@@ -92,6 +93,7 @@ function App() {
       if (event.type === 'event:voice_input') {
         const payload = event.payload as { text: string; confidence: number };
         if (payload.confidence >= 0.7 && payload.text.trim()) {
+          turnStartedAt.current = performance.now();
           append({ id: `voice-${Date.now()}`, role: 'user', text: payload.text, timestamp: Date.now() });
           setSignals([]);
           setMission(null);
@@ -104,14 +106,22 @@ function App() {
       if (event.type === 'event:jarvis:start') {
         const payload = event.payload as { id: string };
         streaming.current = payload.id;
-        append({ id: payload.id, role: 'jarvis', text: '', timestamp: event.timestamp });
         transition('thinking');
         return;
       }
       if (event.type === 'event:jarvis:token' || event.type === 'event:jarvis:end') {
         const payload = event.payload as { id: string; content?: string; token?: string };
-        const text = payload.content ?? payload.token ?? '';
-        setMessages((current) => current.map((message) => message.id === (streaming.current ?? payload.id) ? { ...message, text } : message));
+        const targetId = streaming.current ?? payload.id;
+        setMessages((current) => reducePresenceStream(current, {
+          ...event, payload: { ...payload, id: targetId },
+        }));
+        const visibleText = String(event.type === 'event:jarvis:token' ? payload.token ?? '' : payload.content ?? '').trim();
+        if (visibleText && turnStartedAt.current !== null) {
+          const timing = visibleResponseTiming(turnStartedAt.current, performance.now());
+          window.localStorage.setItem('jarvis.telemetry.first_visible_token', JSON.stringify(timing));
+          performance.mark('jarvis:first-visible-token');
+          turnStartedAt.current = null;
+        }
         if (event.type === 'event:jarvis:end') {
           streaming.current = null;
           tts.finish();
@@ -164,6 +174,7 @@ function App() {
     if (overlay) closeOverlay();
     tts.interrupt();
     if (!fixture) void backend.interrupt().catch(() => undefined);
+    turnStartedAt.current = performance.now();
     append({ id: `user-${Date.now()}`, role: 'user', text, timestamp: Date.now() });
     setSignals([]);
     setMission(null);

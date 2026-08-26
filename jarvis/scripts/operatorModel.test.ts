@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import type { BackendEvent } from '../src/types/index.ts';
 import {
-  confirmationFromEvent, createMission, fixtureMission, reduceMission,
+  confirmationFromEvent, createMission, fixtureMission, reduceMission, reducePresenceStream,
+  visibleResponseTiming,
 } from '../src/operator/model.ts';
 
 const mission = createMission('  Установи   тестовую программу  ', 100);
@@ -36,4 +37,26 @@ assert.equal(confirmation?.id, 'grant-1');
 assert.equal(confirmation?.risk.level, 'high');
 
 assert.equal(fixtureMission('verified').evidence[0].value, 'VERIFIED');
-console.log('operatorModel: 13 assertions passed');
+
+const emptyStart = reducePresenceStream([], {
+  type: 'event:jarvis:start', payload: { id: 'stream-1' }, timestamp: 200,
+});
+assert.deepEqual(emptyStart, [], 'stream start is typing state, not a persistent blank message');
+
+const firstToken = reducePresenceStream(emptyStart, {
+  type: 'event:jarvis:token', payload: { id: 'stream-1', token: 'Привет' }, timestamp: 201,
+});
+assert.deepEqual(firstToken.map((message) => message.text), ['Привет']);
+
+const cancelledBeforeText = reducePresenceStream([], {
+  type: 'event:jarvis:end', payload: { id: 'stream-2', content: '' }, timestamp: 202,
+});
+assert.deepEqual(cancelledBeforeText, [], 'empty end leaves no assistant bubble');
+
+assert.deepEqual(visibleResponseTiming(120, 187), {
+  input_received_ms: 120,
+  first_visible_token_ms: 187,
+  elapsed_ms: 67,
+}, 'first-visible-token timing must be measured from input receipt');
+
+console.log('operatorModel: 17 assertions passed');

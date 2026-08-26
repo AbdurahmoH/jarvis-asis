@@ -186,3 +186,93 @@ button { cursor: pointer; }
   .realStatus .statusItem:nth-child(n+3){display:none}.workspaceGrid,.workspaceGrid[data-context="false"]{grid-template-columns:minmax(300px,.85fr) minmax(430px,1.15fr)}.contextColumn{position:absolute;right:20px;top:18px;width:270px;max-height:calc(100% - 36px);z-index:12}.coreDeck{border-radius:8px 18px 18px 8px}.commandDock nav{display:none}.commandDock{grid-template-columns:1fr auto}.brandMark small{display:none}
 }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important} }
+
+/* R2 product shell: conversation first, state second, decoration last. */
+.aiosWorkspace { grid-template-rows: 58px minmax(0, 1fr) 82px; }
+.topBar { height: 58px; grid-template-columns: 250px minmax(0, 1fr) auto; }
+.brandMark small { color: var(--os-dim); font: 8px var(--font-body); letter-spacing: .08em; }
+.realStatus { gap: 8px; }
+.statusItem { min-width: 124px; border-color: rgba(182,198,231,.08); background: rgba(255,255,255,.025); }
+.workspaceGrid,
+.workspaceGrid[data-context="false"] {
+  grid-template-columns: minmax(560px, 1fr) minmax(260px, 340px);
+  gap: 14px;
+  padding: 14px 16px;
+}
+.workspaceGrid[data-context="false"] { grid-template-columns: minmax(0, 1fr); }
+.workspaceGrid[data-context="false"] .workRail { position: absolute; z-index: 8; top: 14px; right: 16px; width: 300px; }
+.workspaceGrid[data-context="false"] .conversationPane .panelHeading { padding-right: 330px; }
+.conversationPane {
+  grid-template-rows: auto minmax(0, 1fr);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(var(--surface-panel-rgb),.68), rgba(5,7,13,.66));
+}
+.panelHeading { height: 64px; padding: 0 20px; }
+.panelHeading > div { min-width: 0; }
+.panelHeading span { color: var(--accent-primary); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.panelHeading strong { max-width: min(760px, 70vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.panelHeading button { font-size: 10px; }
+.messageList { padding: 18px 20px 28px; }
+.messageList article { max-width: min(78%, 720px); margin: 12px 0; padding: 13px 15px; border-radius: 8px 16px 16px 16px; }
+.messageList article[data-role="user"] { border-radius: 16px 8px 16px 16px; }
+.messageList article p { font-size: 13px; line-height: 1.55; }
+.messageList article header span, .messageList article time { font-size: 8px; }
+.workRail { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.statusBanner {
+  --card-state: var(--state-a);
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  min-height: 98px;
+  padding: 16px;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.statusBanner::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--state-a); box-shadow: 0 0 16px var(--state-a); }
+.statusPulse { width: 10px; height: 10px; border-radius: 50%; background: var(--state-a); box-shadow: 0 0 14px var(--state-a); animation: stateBeat 1.9s ease-in-out infinite; }
+.statusBanner span { display: block; color: var(--os-dim); font: 8px var(--font-data); letter-spacing: .12em; }
+.statusBanner strong { display: block; margin-top: 3px; color: var(--state-a); font: 600 16px var(--font-display); }
+.statusBanner p { max-height: 34px; margin: 5px 0 0; overflow: hidden; color: var(--os-muted); font-size: 10px; line-height: 1.45; }
+.statusBanner em { align-self: start; padding: 5px 7px; border: 1px solid var(--os-line); border-radius: 7px; color: var(--os-muted); font: 7px var(--font-data); font-style: normal; text-transform: uppercase; }
+.statusBanner em[data-ok="true"] { color: var(--accent-success); border-color: color-mix(in srgb,var(--accent-success),transparent 70%); }
+.workRail .contextColumn { min-height: 0; flex: 1; }
+.workRail .columnTitle { padding-left: 3px; }
+.contextCard { border-radius: 14px; }
+.commandDock { grid-template-columns: 340px minmax(480px, 700px) minmax(80px, 1fr); }
+.commandDock nav { justify-self: start; }
+
+.aiosPresence {
+  grid-template-rows: 48px 72px minmax(180px, 1fr) 42px 74px;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 12% 0%,color-mix(in srgb,var(--state-a),transparent 87%),transparent 35%),
+    radial-gradient(circle at 92% 88%,color-mix(in srgb,var(--accent-tertiary),transparent 94%),transparent 42%),
+    linear-gradient(155deg,color-mix(in srgb,var(--surface-base),#121729 9%),var(--surface-base));
+}
+.presenceStatus {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  margin: 12px 14px 8px;
+  padding: 11px 13px;
+  border: 1px solid var(--os-line);
+  border-radius: 12px;
+  background: rgba(var(--surface-panel-rgb),.44);
+}
+.presenceStatus strong { display: block; color: var(--state-a); font-size: 11px; }
+.presenceStatus span { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--os-muted); font-size: 9px; }
+.aiosPresence > .messageList { margin: 8px 13px 0; padding: 10px; }
+.aiosPresence > .messageList article { max-width: 94%; margin: 8px 0; padding: 9px 10px; }
+.aiosPresence > .messageList article p { max-height: none; font-size: 10px; line-height: 1.45; }
+.presenceQuick { justify-content: flex-start; padding: 0 13px; }
+
+@media (max-width: 1050px) {
+  .workspaceGrid { grid-template-columns: minmax(500px, 1fr) 280px; }
+  .workspaceGrid[data-context="false"] { grid-template-columns: minmax(0, 1fr); }
+  .realStatus .statusItem:nth-child(n+2) { display: none; }
+}

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Activity, AudioLines, Bot, Check, CircleStop, CloudSun, Cpu, FileSearch, Files,
-  Gauge, Globe2, HardDrive, Headphones, Layers3, Maximize2, Mic, Minimize2,
+  Activity, AudioLines, Check, CircleStop, CloudSun, Cpu, FileSearch, Files,
+  Gauge, Globe2, HardDrive, Headphones, Maximize2, Mic, Minimize2,
   MonitorUp, Music2, Palette, Radio, Search, Send, Settings2,
   Sparkles, Square, X, Zap,
 } from 'lucide-react';
@@ -25,7 +25,6 @@ interface Props {
   runtimeState: string; runtimeDiagnostics: Record<string, unknown>; signals: LiveSignal[];
 }
 
-type VisualState = 'idle' | 'listening' | 'thinking' | 'executing' | 'speaking' | 'waiting' | 'needs_user' | 'repairing' | 'success' | 'error' | 'starting';
 type CardKind = 'system' | 'weather' | 'music' | 'research' | 'files' | 'computer' | 'task';
 const CLOCK = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
@@ -61,17 +60,6 @@ function visualMeta(props: Pick<Props, 'state' | 'signals' | 'confirmation' | 'c
   return { state: 'idle' as const, label: 'Готов', detail: 'Можно говорить или писать' };
 }
 
-function AICore({ state, compact = false }: { state: VisualState; compact?: boolean }) {
-  return <div className={`aiCore ${compact ? 'compact' : ''}`} data-state={state} aria-label={`JARVIS: ${state}`}>
-    <div className="coreAura" /><div className="corePrism prismA" /><div className="corePrism prismB" />
-    <div className="coreOrbit orbitA"><i /><i /><i /></div><div className="coreOrbit orbitB"><i /><i /><i /><i /></div><div className="coreOrbit orbitC" />
-    <div className="thoughtNodes">{Array.from({ length: 9 }, (_, index) => <i key={index} style={{ '--i': index } as CSSProperties} />)}</div>
-    <div className="listenRipples"><i /><i /><i /></div><div className="executionBlades">{Array.from({ length: 6 }, (_, index) => <i key={index} style={{ '--i': index } as CSSProperties} />)}</div>
-    <div className="voiceSpectrum">{Array.from({ length: 11 }, (_, index) => <i key={index} />)}</div><div className="coreGem"><span><Bot size={compact ? 21 : 28} /></span></div>
-    <div className="successCrown"><Check size={compact ? 22 : 30} /></div><div className="errorSlash"><i /><i /></div>
-  </div>;
-}
-
 function CommandInput({ props, compact = false }: { props: Props; compact?: boolean }) {
   const [value, setValue] = useState(''); const busy = props.state === 'thinking' || props.state === 'executing';
   const submit = () => { const text = value.trim(); if (!text) return; props.onSend(text); setValue(''); };
@@ -85,7 +73,7 @@ function MessageList({ messages, compact = false }: { messages: PresenceMessage[
 }
 function ConversationPane({ props }: { props: Props }) {
   const lastUser = [...props.messages].reverse().find((message) => message.role === 'user');
-  return <section className="conversationPane glassPanel"><header className="panelHeading"><div><span>Диалог</span><strong>{lastUser ? 'Текущая сессия' : 'Новая сессия'}</strong></div><button onClick={props.onNewSession}>Очистить</button></header>{lastUser && <div className="workContext"><span>Сейчас</span><p>{lastUser.text}</p></div>}<MessageList messages={props.messages} /></section>;
+  return <section className="conversationPane glassPanel"><header className="panelHeading"><div><span>{lastUser ? 'Текущая задача' : 'Диалог'}</span><strong>{lastUser ? lastUser.text : 'Чем заняться?'}</strong></div><button onClick={props.onNewSession}>Новая</button></header><MessageList messages={props.messages} /></section>;
 }
 
 function classifySignal(signal: LiveSignal): CardKind {
@@ -124,9 +112,9 @@ function ContextCards({ signals }: { signals: LiveSignal[] }) {
   return <aside className="contextColumn"><header className="columnTitle"><span>Контекст задачи</span><i>{cards.length}</i></header>{cards.map(([kind, signal]) => <SignalCard key={`${kind}-${signal.id}`} kind={kind} signal={signal} />)}</aside>;
 }
 
-function CoreDeck({ props }: { props: Props }) {
+function WorkRail({ props }: { props: Props }) {
   const meta = visualMeta(props); const latest = props.signals.at(-1);
-  return <section className="coreDeck" data-state={meta.state}><div className="depthGrid" /><div className="particleField">{Array.from({ length: 18 }, (_, index) => <i key={index} style={{ '--i': index } as CSSProperties} />)}</div><div className="coreAssembly"><AICore state={meta.state} /><div className="stateCopy"><span className="stateDot" /><div><strong>{meta.label}</strong><p>{meta.detail}</p></div></div></div>{latest && <div className="activeTrace"><span>{toolLabel(latest.tool, latest.kind)}</span><p>{isVerified(latest) ? 'Результат подтверждён' : latest.status}</p><i data-ok={isVerified(latest)} /></div>}</section>;
+  return <aside className="workRail"><section className="statusBanner glassPanel" data-state={meta.state}><i className="statusPulse" /><div><span>JARVIS</span><strong>{meta.label}</strong><p>{latest?.content || meta.detail}</p></div>{latest && <em data-ok={isVerified(latest)}>{isVerified(latest) ? 'проверено' : toolLabel(latest.tool, latest.kind)}</em>}</section><ContextCards signals={props.signals} /></aside>;
 }
 
 const QUICK_ACTIONS = [
@@ -155,19 +143,19 @@ function Diagnostics({ open, data, onClose }: { open: boolean; data: Record<stri
 
 function StatusItem({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone?: string }) { return <span className="statusItem" data-tone={tone}><i>{icon}</i><span>{label}</span><strong>{value}</strong></span>; }
 function TopBar({ props, onTheme, onDiagnostics }: { props: Props; onTheme: () => void; onDiagnostics: () => void }) {
-  const clock = useClock(); const meta = visualMeta(props); const runtime = (props.runtimeDiagnostics.runtime && typeof props.runtimeDiagnostics.runtime === 'object') ? props.runtimeDiagnostics.runtime as Record<string, unknown> : {};
-  const provider = String(runtime.provider ?? props.runtimeDiagnostics.backend ?? 'runtime'); const model = String(props.runtimeDiagnostics.model ?? '').split('/').at(-1) || 'model'; const latency = typeof runtime.probe_latency_ms === 'number' ? `${Math.round(runtime.probe_latency_ms)} ms` : '';
-  return <header className="topBar" data-tauri-drag-region><div className="brandMark"><span>J</span><div><strong>JARVIS</strong><small>AI OPERATING SYSTEM</small></div></div><div className="realStatus"><StatusItem icon={<Activity size={13} />} label="Состояние" value={meta.label} tone={meta.state} /><StatusItem icon={<Layers3 size={13} />} label="Мозг" value={model} /><StatusItem icon={<Globe2 size={13} />} label="Связь" value={props.connected ? provider : 'нет'} tone={props.connected ? 'success' : 'error'} />{latency && <StatusItem icon={<Zap size={13} />} label="Ответ" value={latency} />}</div><div className="windowTools"><time>{clock}</time><button onClick={onDiagnostics} aria-label="Диагностика"><Settings2 size={15} /></button><button onClick={onTheme} aria-label="Тема"><Palette size={15} /></button><button onClick={() => props.onModeChange('presence')} aria-label="Presence Mode"><Minimize2 size={15} /></button><button onClick={() => windowAction('minimize')} aria-label="Свернуть"><span>—</span></button><button onClick={() => windowAction('maximize')} aria-label="Развернуть"><Square size={12} /></button><button className="close" onClick={() => windowAction('close')} aria-label="Закрыть"><X size={15} /></button></div></header>;
+  const clock = useClock(); const meta = visualMeta(props);
+  return <header className="topBar" data-tauri-drag-region><div className="brandMark"><span>J</span><div><strong>JARVIS</strong><small>личный помощник</small></div></div><div className="realStatus"><StatusItem icon={<Activity size={13} />} label="Статус" value={meta.label} tone={meta.state} /><StatusItem icon={<Globe2 size={13} />} label="Связь" value={props.connected ? 'на связи' : 'нет связи'} tone={props.connected ? 'success' : 'error'} /></div><div className="windowTools"><time>{clock}</time><button onClick={onDiagnostics} aria-label="Диагностика"><Settings2 size={15} /></button><button onClick={onTheme} aria-label="Тема"><Palette size={15} /></button><button onClick={() => props.onModeChange('presence')} aria-label="Компактный режим"><Minimize2 size={15} /></button><button onClick={() => windowAction('minimize')} aria-label="Свернуть"><span>—</span></button><button onClick={() => windowAction('maximize')} aria-label="Развернуть"><Square size={12} /></button><button className="close" onClick={() => windowAction('close')} aria-label="Закрыть"><X size={15} /></button></div></header>;
 }
 function Confirmation({ props }: { props: Props }) { if (!props.confirmation) return null; return <div className="confirmationBar"><div><strong>Подтвердить действие</strong><span>{props.confirmation.prompt}</span></div><button onClick={() => props.onConfirm(true)}><Check size={14} /> Разрешить</button><button onClick={() => props.onConfirm(false)}><X size={14} /> Отмена</button></div>; }
 
 function Workspace(props: Props) {
   const [theme, setTheme] = useState(false); const [diagnostics, setDiagnostics] = useState(false); const meta = visualMeta(props); const hasContext = props.signals.length > 0;
-  return <main className="aiosWorkspace" data-state={meta.state}><div className="ambientLayers"><i /><i /><i /></div><TopBar props={props} onTheme={() => setTheme((value) => !value)} onDiagnostics={() => setDiagnostics((value) => !value)} /><section className="workspaceGrid" data-context={hasContext}><ConversationPane props={props} /><CoreDeck props={props} /><ContextCards signals={props.signals} /></section><CommandDock props={props} /><Confirmation props={props} /><ThemeEngine open={theme} onClose={() => setTheme(false)} /><Diagnostics open={diagnostics} data={props.runtimeDiagnostics} onClose={() => setDiagnostics(false)} /></main>;
+  return <main className="aiosWorkspace" data-state={meta.state}><div className="ambientLayers"><i /><i /><i /></div><TopBar props={props} onTheme={() => setTheme((value) => !value)} onDiagnostics={() => setDiagnostics((value) => !value)} /><section className="workspaceGrid" data-context={hasContext}><ConversationPane props={props} /><WorkRail props={props} /></section><CommandDock props={props} /><Confirmation props={props} /><ThemeEngine open={theme} onClose={() => setTheme(false)} /><Diagnostics open={diagnostics} data={props.runtimeDiagnostics} onClose={() => setDiagnostics(false)} /></main>;
 }
 function Presence(props: Props) {
   const [theme, setTheme] = useState(false); const meta = visualMeta(props);
-  return <main className="aiosPresence" data-state={meta.state}><div className="presenceGlow" /><header data-tauri-drag-region><div className="presenceBrand"><i /><strong>JARVIS</strong><span>{props.connected ? 'на связи' : 'нет связи'}</span></div><nav><button onClick={() => setTheme((value) => !value)}><Palette size={15} /></button><button onClick={() => props.onModeChange('command_center')}><Maximize2 size={15} /></button><button onClick={() => windowAction('close')}><X size={15} /></button></nav></header><section className="presenceCore"><AICore state={meta.state} compact /><div className="presenceState"><strong>{meta.label}</strong><span>{meta.detail}</span></div></section><MessageList messages={props.messages} compact /><div className="presenceQuick"><button onClick={props.onVoiceListen}><Mic size={15} /> Слушать</button><button onClick={() => props.onSend('покажи состояние системы')}><Gauge size={15} /> Система</button><button onClick={() => props.onSend('поставь музыку')}><Music2 size={15} /> Музыка</button></div><CommandDock props={props} compact /><ThemeEngine open={theme} onClose={() => setTheme(false)} /></main>;
+  const latest = props.signals.at(-1);
+  return <main className="aiosPresence" data-state={meta.state}><div className="presenceGlow" /><header data-tauri-drag-region><div className="presenceBrand"><i /><strong>JARVIS</strong><span>{meta.label}</span></div><nav><button onClick={() => setTheme((value) => !value)} aria-label="Тема"><Palette size={15} /></button><button onClick={() => props.onModeChange('command_center')} aria-label="Расширенный режим"><Maximize2 size={15} /></button><button onClick={() => windowAction('close')} aria-label="Закрыть"><X size={15} /></button></nav></header><section className="presenceStatus"><i className="statusPulse" /><div><strong>{latest ? toolLabel(latest.tool, latest.kind) : meta.label}</strong><span>{latest?.content || meta.detail}</span></div></section><MessageList messages={props.messages} compact /><div className="presenceQuick"><button onClick={props.onVoiceListen}><Mic size={15} /> Слушать</button><button onClick={() => props.onSend('покажи состояние системы')}><Gauge size={15} /> Система</button><button onClick={() => props.onSend('поставь музыку')}><Music2 size={15} /> Музыка</button></div><CommandDock props={props} compact /><ThemeEngine open={theme} onClose={() => setTheme(false)} /></main>;
 }
 
 export function OperatorShell(props: Props) {

@@ -145,7 +145,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setGlowIntensity: (v) => setSettings((s) => ({ ...s, glowIntensity: Math.max(0, Math.min(1, v)) })),
       setSaturation: (v) => setSettings((s) => ({ ...s, saturation: Math.max(0.7, Math.min(1.5, v)) })),
       setContrast: (v) => setSettings((s) => ({ ...s, contrast: Math.max(0.85, Math.min(1.25, v)) })),
-      completeOnboarding: (name, honorific = 'сэр') => {
+      completeOnboarding: (name, honorific = '') => {
         setProfile({ name: name.trim() || 'Guest', honorific, createdAt: Date.now() });
       },
       updateProfile: (p) => setProfile((prev) => (prev ? { ...prev, ...p } : prev)),

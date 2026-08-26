@@ -63,7 +63,7 @@ export function WhiteRoom() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.25, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           >
-            <p className={styles.q}>Как к вам обращаться, сэр?</p>
+            <p className={styles.q}>Персонализация профиля</p>
             <form onSubmit={submit} className={styles.row}>
               <input
                 className={styles.input}
@@ -87,7 +87,7 @@ export function WhiteRoom() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5 }}
           >
-            Я буду обращаться к вам «сэр». Это можно изменить в настройках.
+            Профиль сохранён. Обращение можно изменить в настройках.
           </motion.p>
         )}
       </div>

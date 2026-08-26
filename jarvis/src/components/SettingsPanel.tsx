@@ -175,7 +175,7 @@ function CloudSection() {
 export function SettingsPanel() {
   const { dispatch } = useUIState();
   const { settings, setTheme, setTransparency, setReduceMotion, setBackgroundUrl, profile, updateProfile } = useTheme();
-  const [honorific, setHonorific] = useState(profile?.honorific ?? 'сэр');
+  const [honorific, setHonorific] = useState(profile?.honorific ?? '');
 
   const close = () => dispatch({ type: 'SET_SETTINGS_OPEN', payload: false });
   const panelRef = useFocusTrap<HTMLDivElement>(true, { onEscape: close, scrollLock: true, trap: true });
@@ -284,11 +284,11 @@ export function SettingsPanel() {
                 className={styles.text}
                 value={honorific}
                 onChange={(e) => setHonorific(e.target.value)}
-                onBlur={() => profile && updateProfile({ honorific: honorific.trim() || 'сэр' })}
-                placeholder="сэр"
+                onBlur={() => profile && updateProfile({ honorific: honorific.trim() })}
+                placeholder="например, по имени"
                 aria-label="Обращение"
               />
-              <p className={styles.hint}>Как J.A.R.V.I.S. обращается к вам (например: сэр).</p>
+              <p className={styles.hint}>Необязательное обращение. Оставьте пустым для нейтральных ответов.</p>
             </section>
 
             <CloudSection />

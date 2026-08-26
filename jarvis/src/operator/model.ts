@@ -1,6 +1,40 @@
 import type { BackendEvent, PendingConfirmation } from '@/types';
+import type { PresenceMessage } from '@/window/MessageStream';
 
 export type UiMode = 'presence' | 'command_center';
+
+export function reducePresenceStream(
+  messages: PresenceMessage[], event: BackendEvent,
+): PresenceMessage[] {
+  if (event.type === 'event:jarvis:start') return messages;
+  if (event.type !== 'event:jarvis:token' && event.type !== 'event:jarvis:end') return messages;
+  const payload = (event.payload ?? {}) as { id?: string; token?: string; content?: string };
+  const id = String(payload.id ?? '');
+  const text = String(payload.content ?? payload.token ?? '');
+  if (!id) return messages;
+  const index = messages.findIndex((message) => message.id === id);
+  if (!text.trim()) {
+    return index < 0 ? messages : messages.filter((message) => message.id !== id);
+  }
+  if (index < 0) {
+    return [...messages, { id, role: 'jarvis' as const, text, timestamp: event.timestamp }].slice(-30);
+  }
+  return messages.map((message) => message.id === id ? { ...message, text } : message);
+}
+
+export interface VisibleResponseTiming {
+  input_received_ms: number;
+  first_visible_token_ms: number;
+  elapsed_ms: number;
+}
+
+export function visibleResponseTiming(inputReceivedMs: number, firstVisibleTokenMs: number): VisibleResponseTiming {
+  return {
+    input_received_ms: inputReceivedMs,
+    first_visible_token_ms: firstVisibleTokenMs,
+    elapsed_ms: Math.max(0, firstVisibleTokenMs - inputReceivedMs),
+  };
+}
 export type MissionPhase = 'research' | 'download' | 'verify' | 'install' | 'observe' | 'verified' | 'error';
 
 export interface MissionStep {
