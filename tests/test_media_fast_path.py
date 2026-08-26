@@ -13,7 +13,9 @@ from core.verifier import verify_action_result
 
 def test_bare_music_command_uses_media_fast_path(settings, fake_backend):
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
-    with patch("core.actions.media._open_target", return_value=True), \
+    with patch("core.actions.media.duckduckgo_search", return_value=[{
+             "title": "Track", "url": "https://www.youtube.com/watch?v=fixture", "snippet": "",
+         }]), patch("core.actions.media._open_target", return_value=True), \
          patch("core.actions.media._request_playback", return_value=True), \
          patch("core.verifier._active_audio_sessions", return_value=["fixture-player"]):
         outcome = agent.execute("поставь музыку")
@@ -21,7 +23,7 @@ def test_bare_music_command_uses_media_fast_path(settings, fake_backend):
     assert outcome.mode == "fast_path"
     assert outcome.tool_used == "play_music"
     assert outcome.verified is True
-    assert "музыкальный плеер" in outcome.text.lower()
+    assert "video_opened" in outcome.text
     assert not fake_backend.calls
 
 

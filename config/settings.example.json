@@ -128,7 +128,7 @@
   },
   "persona": {
     "name": "JARVIS",
-    "address": "сэр",
+    "address": "",
     "persona_file": "persona/persona.md",
     "language": "ru"
   },

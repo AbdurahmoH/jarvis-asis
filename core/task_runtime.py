@@ -1060,7 +1060,7 @@ class TaskRuntime:
         """Обертка потока: ловит всё, управляет статусом и watchdog."""
         start = time.perf_counter()
         mission.emit(EVENT_ACKNOWLEDGED, phase=MissionStatus.ACKNOWLEDGING.value,
-                     payload={"ack": mission.acknowledgement or "Принято, сэр. Разбираюсь."})
+                     payload={"ack": mission.acknowledgement or "Принято. Разбираюсь."})
 
         # Опциональный реальный watchdog на ВСЮ миссию (не на размышление!).
         if watchdog is not None and watchdog > 0:

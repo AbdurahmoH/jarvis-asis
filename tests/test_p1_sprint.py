@@ -249,8 +249,8 @@ def test_p1_acknowledgement_falls_back_offline(monkeypatch):
     monkeypatch.setattr("core.llm.get_llm_backend", _boom)
 
     # Без settings/goal — мгновенно базовая фраза по intent.
-    assert pick_acknowledgement("app") == "Принято, сэр."
-    assert pick_acknowledgement("none") == "Понял, сэр. Разбираюсь."
+    assert pick_acknowledgement("app") == "Принято."
+    assert pick_acknowledgement("none") == "Понял. Разбираюсь."
 
     # С целью, но без локальной модели (offline) — должен откатиться к base,
     # а НЕ упасть и НЕ вернуть пустоту.

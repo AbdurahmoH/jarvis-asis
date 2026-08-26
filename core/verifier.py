@@ -473,12 +473,15 @@ def verify_current_time(result: ActionResult) -> VerificationResult:
 def verify_play_music(result: ActionResult) -> VerificationResult:
     """play_music: an active audio session exists after the launch request."""
     text = _output_text(result)
+    output = result.output if isinstance(result.output, Mapping) else {}
+    stage = str(output.get("stage") or "").casefold()
     args = result.args or {}
     source = str(args.get("source") or "auto").casefold()
     query = str(args.get("query") or "").strip()
     if result.ok and (
-        "поиск музыки" in text.casefold()
-        or (source in {"youtube", "spotify"} and bool(query))
+        stage in {"search_opened", "service_opened"}
+        or "поиск музыки" in text.casefold()
+        or (source == "spotify" and bool(query))
     ):
         return VerificationResult(
             False,
@@ -503,6 +506,25 @@ def verify_play_music(result: ActionResult) -> VerificationResult:
         False,
         "media_playback",
         "медиаповерхность открыта, но активное воспроизведение не наблюдалось",
+    )
+
+
+def verify_public_data(result: ActionResult) -> VerificationResult:
+    """Fresh public data must carry a non-empty structured observation."""
+    if not result.ok or not isinstance(result.output, Mapping):
+        return VerificationResult(
+            False, "fresh_public_data",
+            result.error or "структурированные данные отсутствуют",
+        )
+    observed = bool(
+        result.output.get("rates")
+        or result.output.get("items")
+        or result.output.get("text")
+    )
+    return VerificationResult(
+        observed,
+        "fresh_public_data",
+        "получены свежие структурированные данные" if observed else "источник вернул пустые данные",
     )
 
 
@@ -635,6 +657,7 @@ register_verifier("system_status", verify_system_metrics)
 register_verifier("current_time", verify_current_time)
 register_verifier("play_music", verify_play_music)
 register_verifier("weather", verify_non_empty_output)
+register_verifier("public_data", verify_public_data)
 register_verifier("add_reminder", verify_reminder_registered)
 register_verifier("list_reminders", verify_non_empty_output)
 register_verifier("computer_mouse", verify_computer_action)

@@ -400,7 +400,7 @@ class PersonaConfig(_Section):
     """Личность ассистента."""
 
     name: str = "АТЛАС"
-    address: str = "сэр"
+    address: str = ""
     persona_file: str = "persona/persona.md"
     language: str = "ru"
 
@@ -562,7 +562,7 @@ class LauncherConfig(_Section):
     #: Рабочая директория backend (корень проекта).
     backend_workdir: str = ""
     #: Приветствие при старте сессии (голос + текст).
-    greeting_enabled: bool = True
+    greeting_enabled: bool = False
 
 class STTConfig(_Section):
     enabled: bool = False

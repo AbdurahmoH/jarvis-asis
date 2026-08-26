@@ -39,7 +39,7 @@ class PersonalityProfile:
     verbosity: str = "adaptive"
     initiative: str = "assistant"
     respect_level: str = "high"
-    address: str = "сэр"
+    address: str = ""
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "PersonalityProfile":
@@ -63,7 +63,7 @@ class UserProfile:
     prefers_action_over_explanation: bool = False
     likes_confirmation: bool = True
     humor_preference: float | None = None
-    preferred_address: str = "сэр"
+    preferred_address: str = ""
     delegation_affinity: dict[str, float] = field(default_factory=dict)
 
 

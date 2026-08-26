@@ -859,6 +859,7 @@ class Orchestrator:
         state["verified"] = bool(outcome.verified)
         state["mode"] = outcome.mode
         state["route"] = understanding.route.value
+        state.setdefault("latency", {})["stages"] = dict(outcome.latency_stages)
         if outcome.needs_confirmation:
             state["confirmation_id"] = getattr(outcome, "confirmation_id", None)
             state["needs_confirmation"] = True

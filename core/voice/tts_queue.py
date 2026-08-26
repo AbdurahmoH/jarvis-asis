@@ -18,7 +18,7 @@ class TTSQueue:
     def __init__(self, tts_engine, *, renderer: Optional[SpeechRenderer] = None) -> None:
         self._tts = tts_engine
         self._renderer = renderer or SpeechRenderer()
-        self._items: collections.deque[tuple[int, RenderedSpeech]] = collections.deque()
+        self._items: collections.deque[tuple[int, RenderedSpeech, float]] = collections.deque()
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._paused = False
@@ -28,6 +28,7 @@ class TTSQueue:
         self._stopped.set()
         self._generation = 0
         self._spoken: collections.deque[str] = collections.deque(maxlen=64)
+        self._last_telemetry: dict[str, float] = {}
 
     def start(self) -> None:
         with self._condition:
@@ -70,7 +71,9 @@ class TTSQueue:
         with self._condition:
             if not self._running:
                 return False
-            self._items.append((self._generation, rendered))
+            enqueued_at = round(time.time_ns() / 1_000_000.0, 3)
+            self._last_telemetry = {"enqueued_at_ms": enqueued_at}
+            self._items.append((self._generation, rendered, enqueued_at))
             self._condition.notify()
         return True
 
@@ -140,6 +143,11 @@ class TTSQueue:
         with self._condition:
             return tuple(self._spoken)
 
+    @property
+    def last_telemetry(self) -> dict[str, float]:
+        with self._condition:
+            return dict(self._last_telemetry)
+
     def _worker(self) -> None:
         try:
             while True:
@@ -150,10 +158,14 @@ class TTSQueue:
                         break
                     if not self._items:
                         continue
-                    generation, item = self._items.popleft()
+                    generation, item, enqueued_at = self._items.popleft()
                     if generation != self._generation:
                         continue
                     self._active = True
+                    self._last_telemetry = {
+                        "enqueued_at_ms": enqueued_at,
+                        "first_audio_at_ms": round(time.time_ns() / 1_000_000.0, 3),
+                    }
                 try:
                     speak_rendered = getattr(self._tts, "speak_rendered", None)
                     if callable(speak_rendered):

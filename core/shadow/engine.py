@@ -347,5 +347,5 @@ def active_mode_message(goal: str) -> str:
     """Fallback wording for a novel request; never frames learning as inability."""
     risk = assess_risk(goal)
     if risk.needs_confirmation:
-        return "Сейчас разберусь, сэр. Перед опасной операцией потребуется ваше подтверждение."
-    return "Сейчас разберусь, сэр. Подготовлю безопасный способ и проверю его."
+        return "Сейчас разберусь. Перед опасной операцией потребуется ваше подтверждение."
+    return "Сейчас разберусь. Подготовлю подход и проверю результат."

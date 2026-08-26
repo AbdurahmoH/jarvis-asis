@@ -218,6 +218,15 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         fallbacks=["web_fetch"],
         tags=["web", "поиск", "найди", "search", "интернет", "информация", "документация"],
     ),
+    "public_data": dict(
+        description="Получает свежие курсы валют и новости из публичных источников.",
+        examples=["курс доллара сегодня", "последние новости технологий"],
+        risk_level=RiskLevel.LOW,
+        speed=Speed.SLOW,
+        internet_required=True,
+        success_check="ответ содержит свежие структурированные данные источника",
+        tags=["web", "fresh", "currency", "news", "курс", "валюта", "новости"],
+    ),
     "web_fetch": dict(
         description="Скачивает веб-страницу по URL и извлекает основной текст.",
         examples=["прочитай страницу https://...", "что написано на сайте X"],

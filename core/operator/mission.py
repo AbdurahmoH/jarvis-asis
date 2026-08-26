@@ -211,7 +211,7 @@ class OperatorMission:
             trace.append({"phase": "learning", "status": "saved",
                           "knowledge": str(knowledge_path), "episode": episode.episode_id})
             return OperatorMissionReport(
-                True, "completed", "Готово. Проверяйте, сэр.", safe_desired,
+                True, "completed", "Готово. Результат проверен.", safe_desired,
                 current, observed, {}, repairs, trace, installer_payload,
                 str(knowledge_path), episode.episode_id, reused_knowledge,
                 bool(reused_episodes),
@@ -220,7 +220,7 @@ class OperatorMission:
             )
         except MissionCancelled:
             return self._failure("cancelled", safe_desired, trace, started,
-                                 message="Понял, сэр. Действие отменено.")
+                                 message="Понял. Действие отменено.")
 
     def _apply_changes(self, adapter: Any, changes: dict[str, dict[str, Any]],
                        control: MissionControl, trace: list[dict[str, Any]],

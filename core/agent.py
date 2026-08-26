@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -144,13 +145,13 @@ def _hide_reasoning_stream(cumulative: str) -> str:
 # --------------------------------------------------------------------------- #
 
 ACK_PHRASES: Dict[str, str] = {
-    "app": "Принято, сэр.",
+    "app": "Принято.",
     "file": "Сейчас проверю.",
     "web": "Разбираюсь.",
-    "browser": "Понял, сэр.",
+    "browser": "Понял.",
     "system": "Принято.",
-    "media": "Понял, сэр.",
-    "none": "Понял, сэр. Разбираюсь.",
+    "media": "Понял.",
+    "none": "Понял. Разбираюсь.",
 }
 
 
@@ -189,7 +190,7 @@ def pick_acknowledgement(intent: str, goal: str = "",
             f"Сгенерируй ОДНУ короткую (до 5 слов) фразу подтверждения приёма "
             f"в стиле живого дворецкого, без приветствий и пояснений. "
             f"Не начинай выполнять задачу. Только подтверди, что понял. "
-            f"Примеры стиля: \"{base}\", \"Есть, сэр.\", \"Слушаюсь.\""
+            f"Примеры стиля: \"{base}\", \"Уже смотрю.\", \"Слушаю.\""
         )
         ack = backend.direct(prompt, max_tokens=24, temperature=0.4)
         ack = (ack or "").strip().strip('"\'‘’“”')
@@ -246,6 +247,7 @@ class AgentOutcome:
     degraded: bool = False
     #: Internal observed result for bounded multi-step planning. Never sent to UI.
     action_result: Optional[ActionResult] = field(default=None, repr=False)
+    latency_stages: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -259,6 +261,7 @@ class AgentOutcome:
             "mode": self.mode,
             "trace": list(self.trace),
             "degraded": self.degraded,
+            "latency_stages": dict(self.latency_stages),
         }
 
 
@@ -470,6 +473,11 @@ class Agent:
     def clear_stream_sink(self) -> None:
         self._stream_tls.sink = None
 
+    def _mark_latency(self, stage: str) -> None:
+        stages = getattr(self._stream_tls, "latency_stages", None)
+        if isinstance(stages, dict) and stage not in stages:
+            stages[stage] = round(time.time_ns() / 1_000_000.0, 3)
+
     def _stream_consume(self, backend, messages: List[Dict[str, Any]], system: str,
                         extract_answer: bool = True,
                         max_tokens: Optional[int] = None) -> str:
@@ -486,8 +494,12 @@ class Agent:
         """
         sink = getattr(self._stream_tls, "sink", None)
         stream = getattr(backend, "streaming", None)
+        self._mark_latency("llm_request")
         if sink is None or stream is None:
-            return backend.chat(messages, system=system, max_tokens=max_tokens)
+            result = backend.chat(messages, system=system, max_tokens=max_tokens)
+            self._mark_latency("llm_first_token")
+            self._mark_latency("llm_complete")
+            return result
 
         extractor = AnswerStreamExtractor() if extract_answer else None
         parts: List[str] = []
@@ -495,6 +507,7 @@ class Agent:
             for piece in stream(messages, system=system, max_tokens=max_tokens):
                 if not piece:
                     continue
+                self._mark_latency("llm_first_token")
                 parts.append(piece)
                 if extractor is not None:
                     visible = extractor.feed(piece)
@@ -512,7 +525,9 @@ class Agent:
 
         raw = "".join(parts)
         if not raw.strip():
-            return backend.chat(messages, system=system, max_tokens=max_tokens)
+            raw = backend.chat(messages, system=system, max_tokens=max_tokens)
+            self._mark_latency("llm_first_token")
+        self._mark_latency("llm_complete")
         return raw
 
     # ------------------------------------------------------------------ #
@@ -624,6 +639,8 @@ class Agent:
         («меня зовут X») в профиль; после — пара (goal, ответ) попадает в
         bounded session memory для контекста следующих вопросов.
         """
+        self._stream_tls.latency_stages = {}
+        self._mark_latency("input_received")
         goal = (goal or "").strip()
         # Счётчик вызовов инструментов на весь пользовательский запрос
         # (B1): сбрасывается в точке входа, применяется в _execute_verified,
@@ -692,6 +709,10 @@ class Agent:
                                  name="jarvis-executive-write", daemon=True).start()
             else:
                 _record_executive()
+        self._mark_latency("response_ready")
+        outcome.latency_stages = dict(
+            getattr(self._stream_tls, "latency_stages", {}) or {},
+        )
         return outcome
 
     def _remember_exchange(self, goal: str, outcome: AgentOutcome) -> None:
@@ -743,13 +764,18 @@ class Agent:
         # ---- 2. RISK (§21) ----
         risk = assess_risk(goal)
         trace.append(f"risk={risk.level.value}")
+        self._mark_latency("route_complete")
         perception = self._try_world_perception(goal, mission, cancel, risk, trace)
         if perception is not None:
             return perception
+        fresh = self._try_fresh_information(goal, mission, cancel, risk, trace)
+        if fresh is not None:
+            return fresh
         safe_conversation, safe_conversation_reason = classify_conversation(goal, intent)
         if safe_conversation:
             routing = self._model_router.route(goal, context_tokens=0)
             memory_ctx = self._retrieve_context(goal)
+            self._mark_latency("context_complete")
             trace.append(f"conversation safety gate: {safe_conversation_reason}")
             return self._answer_conversation(
                 goal, mission, cancel, trace, routing, memory_ctx,
@@ -819,6 +845,7 @@ class Agent:
         # Local system/app/media commands do not need Chroma initialization or
         # a model context.  Keeping this branch first protects the 1.5s hard
         # budget and prevents cold memory setup from polluting tool latency.
+        self._mark_latency("context_complete")
         fast = self._try_fast_path(
             goal, intent, mission, cancel, risk,
         )
@@ -828,6 +855,7 @@ class Agent:
 
         # ---- 5c. MEMORY: извлечение релевантного контекста (P0-5) ----
         memory_ctx = self._retrieve_context(goal)
+        self._mark_latency("context_complete")
         if memory_ctx and mission is not None:
             mission.metadata["memory_context"] = memory_ctx[:600]
 
@@ -993,7 +1021,7 @@ class Agent:
                     goal, mission, trace,
                     MODEL_ERROR_PREFIX + "DeepSeek вернул пустой ответ",
                 )
-            text = text or "Готов, сэр."
+            text = text or "Готов."
             # §29 — но если модель ФАКТИЧЕСКИ отказалась (для задачи, требующей
             # действия) — это НЕ "я не умею" (§29). Перенаправляем на путь
             # неизвестной задачи: исследовать и научиться.
@@ -1360,7 +1388,7 @@ class Agent:
                 mission.set_status(MissionStatus.CANCELLED, "отклонено пользователем")
                 mission.emit(EVENT_TASK_FAILED, payload={"reason": "confirmation_rejected"})
             return AgentOutcome(
-                text="Понял, сэр. Действие отменено.",
+                text="Понял. Действие отменено.",
                 verified=False,
                 mode="confirmation_rejected",
                 risk=risk,
@@ -1595,10 +1623,69 @@ class Agent:
         outcome = self._execute_verified(
             goal=goal, tool=cap.name, args=args, mission=mission, cancel=cancel,
             trace=[f"fast path -> {cap.name}"], risk=exec_risk, caps=caps,
-            fast_path=True,
+            fast_path=True, finalize_response=cap.name != "play_music",
         )
+        if (cap.name == "play_music" and not outcome.text
+                and outcome.action_result is not None and outcome.verification is not None):
+            outcome.text = self._format_success(outcome.action_result, outcome.verification)
         outcome.mode = "fast_path"
         return outcome
+
+    def _try_fresh_information(
+        self, goal: str, mission: Optional[Mission], cancel: threading.Event,
+        risk: RiskAssessment, trace: List[str],
+    ) -> Optional[AgentOutcome]:
+        """Route freshness-sensitive questions to live evidence before chat."""
+        if risk.needs_confirmation or cancel.is_set():
+            return None
+        lowered = " ".join((goal or "").casefold().replace("ё", "е").split())
+        tool = ""
+        args: Dict[str, Any] = {}
+        if any(marker in lowered for marker in (
+            "курс доллар", "курс евро", "курс валют", "обменный курс",
+            "доллар сегодня", "евро сегодня", "usd rub", "eur rub",
+        )):
+            tool, args = "public_data", {"kind": "currency"}
+        elif "новост" in lowered:
+            query = re.sub(
+                r"\b(последние|последняя|свежие|сегодня|новости|новость)\b",
+                " ", lowered,
+            )
+            tool, args = "public_data", {
+                "kind": "news",
+                "query": " ".join(query.split()) or "главные события",
+                "max_results": 5,
+            }
+        elif any(marker in lowered for marker in (
+            "погод", "прогноз погод", "температура на улице",
+        )):
+            tool, args = "weather", {"forecast_days": 1}
+        elif any(marker in lowered for marker in (
+            "акции", "stock", "крипто", "биткоин", "ethereum", "спорт", "матч",
+            "цена", "стоимость", "наличие", "доступен ли", "последняя версия",
+            "текущая версия", "latest version",
+        )) and any(marker in lowered for marker in (
+            "сегодня", "сейчас", "текущ", "последн", "свеж", "latest", "цена",
+            "стоимость", "наличие", "доступен ли",
+        )):
+            tool, args = "web_search", {"query": goal.strip(), "max_results": 5}
+        if not tool:
+            return None
+        self._mark_latency("context_complete")
+        capability = CAPABILITIES.get(tool)
+        if capability is None:
+            return AgentOutcome(
+                text=f"Источник свежих данных {tool} не зарегистрирован.",
+                verified=False, tool_used=tool, mode="tool",
+                trace=trace + ["freshness route missing capability"],
+            )
+        trace.append(f"freshness route -> {tool}")
+        return self._execute_verified(
+            goal=goal, tool=tool, args=args, mission=mission, cancel=cancel,
+            trace=trace, risk=assess_risk(goal, tool, args), caps=[capability],
+            fast_path=True,
+            routing=self._model_router.route(goal, context_tokens=0),
+        )
 
     def _try_world_perception(
         self,
@@ -1690,17 +1777,38 @@ class Agent:
             return {}
 
         if cap.name == "play_music":
-            # A network source is never inferred silently.  Local path/URI
-            # may be supplied by an explicit caller or a future planner.
-            mood = ""
-            for marker in ("настроения", "настроение", "mood"):
-                if marker in lowered:
-                    mood = text.split(marker, 1)[-1].strip(" ,:—-")
-                    break
-            # A bare media command is still a complete intent: launch the
-            # local player.  Returning an empty object keeps it on the
-            # deterministic fast path instead of paying for planner JSON.
-            return {"mood": mood} if mood else {}
+            local_markers = (
+                "с компьютера", "локальную музыку", "локальная музыка",
+                "local file", ".mp3",
+            )
+            if any(marker in lowered for marker in local_markers):
+                return {"source": "local", "allow_network": False}
+            source = "spotify" if "spotify" in lowered else "youtube"
+            query = lowered
+            for marker in (
+                "поставь музыку", "включи музыку", "поставь трек", "включи трек",
+                "поставь песню", "включи песню", "на ютубе", "на youtube", "youtube",
+                "в spotify", "spotify",
+            ):
+                query = query.replace(marker, " ")
+            chooser_markers = (
+                "на свой вкус", "сам выбери", "сама выбери", "на твой выбор",
+                "что-нибудь хорошее", "что нибудь хорошее", "на свое усмотрение",
+            )
+            assistant_choice = any(marker in lowered for marker in chooser_markers)
+            for marker in chooser_markers:
+                query = query.replace(marker, " ")
+            query = " ".join(query.strip(" .,!?:;—-").split())
+            if assistant_choice or not query or query in {
+                "музыку", "музыка", "трек", "песню", "песня",
+            }:
+                preference = str(self._user_context.get("music_preference") or "").strip()
+                query = preference or self._choose_music_query(goal)
+            return {
+                "query": query or "русская музыка для хорошего настроения",
+                "source": source,
+                "allow_network": True,
+            }
 
         if cap.name == "web_search":
             query = text
@@ -1724,6 +1832,30 @@ class Agent:
             return None
 
         return None
+
+    def _choose_music_query(self, goal: str) -> str:
+        """Use the configured brain once for an actual choice, never chooser words."""
+        fallback = "русская музыка для хорошего настроения"
+        if not self.deepseek_brain_mode:
+            return fallback
+        backend, _ = self._backend_for_routing(
+            self._model_router.route(goal, context_tokens=0),
+        )
+        if backend is None:
+            return fallback
+        try:
+            answer = backend.direct(
+                "Выбери один реальный трек или готовый музыкальный запрос для YouTube. "
+                "Верни только исполнителя и название, одной строкой, без кавычек и пояснений. "
+                f"Пожелание пользователя: {goal}",
+                system="Ты музыкальный редактор JARVIS. Выбирай конкретно и естественно.",
+                max_tokens=40, temperature=0.7,
+            )
+            clean = " ".join(str(answer or "").split()).strip(" \"'«»")
+            return clean[:120] or fallback
+        except Exception as exc:
+            log.warning("Music choice generation failed: %s", exc)
+            return fallback
 
     # ------------------------------------------------------------------ #
     #  Capability discovery — compact whole surface before tool schemas
@@ -2825,15 +2957,18 @@ class Agent:
             mission.emit(EVENT_STEP_STARTED, payload={"tool": tool, "args": args})
             mission.emit(EVENT_TOOL_CALLED, payload={"tool": tool, "args": args})
 
-        web_tool = tool in {"web_search", "web_fetch", "weather"}
+        web_tool = tool in {"web_search", "web_fetch", "weather", "public_data"}
         budget_cfg = getattr(self._settings, "latency_budgets", None)
         web_timeout = float(getattr(budget_cfg, "research_source_timeout_ms", 8000.0)) / 1000.0
         def _call_tool() -> ActionResult:
-            return execute_tool(
+            self._mark_latency("tool_start")
+            result = execute_tool(
                 self._registry, tool, args, context,
                 max_retries=0 if web_tool else 2,
                 timeout_sec=web_timeout if web_tool else None,
             )
+            self._mark_latency("tool_end")
+            return result
 
         authority_request = self._delegated_authority_request(
             mission, goal=goal, tool=tool, args=args, risk=risk,
@@ -2865,6 +3000,7 @@ class Agent:
             })
 
         verification = verify_action_result(result)
+        self._mark_latency("verification_complete")
         trace.append(f"verify -> {verification.verified} ({verification.method}: {verification.detail})")
 
         # ---- ACTION BUDGET (B1) ----
@@ -3313,13 +3449,13 @@ class Agent:
             # persona core and the confirmed user name.  It skips relationship
             # retrieval and the full planner prompt, which were the latency and
             # stale-profile sources, while preserving Sprint 4 persona hints.
-            persona_name = getattr(getattr(self._settings, "persona", None), "name", "АТЛАС")
-            address = getattr(getattr(self._settings, "persona", None), "address", "сэр")
+            address = str(getattr(getattr(self._settings, "persona", None), "address", "") or "").strip()
             compact_parts = [
                 persona_core(),
-                f"Имя оператора: {persona_name}; обращение: «{address}».",
                 "Стиль: профессионально-дружелюбный собеседник; отвечай естественно и кратко, максимум два коротких предложения.",
             ]
+            if address:
+                compact_parts.append(f"Предпочтительное обращение пользователя: «{address}».")
             try:
                 profile_ctx = get_relevant_profile_context(self._settings, goal)
             except Exception as exc:  # noqa: BLE001
@@ -3327,8 +3463,6 @@ class Agent:
                 log.debug("Профиль недоступен: %s", exc)
             if profile_ctx:
                 compact_parts.append(f"Подтверждённый профиль пользователя: {profile_ctx[:240]}")
-            else:
-                compact_parts.append("Имя пользователя пока неизвестно; при уместности спроси его один раз.")
             tone = detect_tone(goal)
             if tone == "casual":
                 compact_parts.append("Пользователь настроен неформально — отвечай живее, допустима лёгкая шутка.")
@@ -3501,7 +3635,7 @@ class Agent:
                     )
                 if capability_report.completed:
                     return AgentOutcome(
-                        text="Готово. Проверяйте, сэр.", verified=True,
+                        text="Готово. Результат проверен.", verified=True,
                         tool_used=capability_plan.capability_id,
                         mode="capability", trace=trace,
                     )

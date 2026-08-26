@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from core.actions.base import ActionResult, Tool, ToolContext
 from core.actions.registry import DEFAULT_REGISTRY
+from core.actions.web_search import duckduckgo_search
 
 __all__ = ["PlayMusicTool", "play_music"]
 
@@ -109,13 +110,29 @@ def play_music(*, query: str = "", mood: str = "", uri: str = "", path: str = ""
     if source == "spotify":
         target = "spotify:search:" + urllib.parse.quote(query)
     else:
-        target = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+        results = duckduckgo_search(f"site:youtube.com/watch {query}", max_results=5)
+        direct = next((
+            str(item.get("url") or "") for item in results
+            if "youtube.com/watch" in str(item.get("url") or "")
+            or "youtu.be/" in str(item.get("url") or "")
+        ), "")
+        target = direct or ("https://www.youtube.com/results?search_query=" + urllib.parse.quote(query))
     try:
         opened = _open_target(target, source=source)
         if not opened:
             return ActionResult(tool="play_music", args=args, ok=False, error="Медиасервис не открылся")
-        return ActionResult(tool="play_music", args=args, ok=True,
-                            output=f"Открыл поиск музыки: {query}")
+        if source == "youtube":
+            stage = "video_opened" if "youtube.com/watch" in target or "youtu.be/" in target else "search_opened"
+            return ActionResult(
+                tool="play_music", args=args, ok=True,
+                output={"stage": stage, "query": query, "url": target},
+                side_effects_contained=False,
+            )
+        return ActionResult(
+            tool="play_music", args=args, ok=True,
+            output={"stage": "service_opened", "query": query, "uri": target},
+            side_effects_contained=False,
+        )
     except (OSError, ValueError) as exc:
         return ActionResult(tool="play_music", args=args, ok=False, error=f"Не удалось открыть медиасервис: {exc}")
 

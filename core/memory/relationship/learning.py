@@ -134,7 +134,7 @@ class PreferenceLearner:
                 if isinstance(data.get("likes_confirmation"), bool) else True
             ),
             humor_preference=humor,
-            preferred_address=str(data.get("preferred_address") or "сэр"),
+            preferred_address=str(data.get("preferred_address") or ""),
             delegation_affinity=affinity,
         )
 

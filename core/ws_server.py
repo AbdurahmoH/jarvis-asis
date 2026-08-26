@@ -242,6 +242,34 @@ class JarvisWSServer:
             )
         return "local"
 
+    def _runtime_status_payload(self) -> Dict[str, Any]:
+        """Return product readiness independently from optional local warmup."""
+        try:
+            diagnostics = self._orch.runtime_diagnostics()
+        except Exception:
+            diagnostics = {}
+        warmup = diagnostics.get("warmup") if isinstance(diagnostics, dict) else {}
+        if not isinstance(warmup, dict):
+            warmup = {}
+        if bool(getattr(self._settings, "deepseek_brain_mode", False)):
+            return {
+                "type": "runtime_status",
+                "state": "ready",
+                "ready": True,
+                "diagnostics": {**warmup, "brain": "deepseek"},
+            }
+        warmup_state = str(warmup.get("state", "") or "").casefold()
+        state = (
+            "ready" if diagnostics.get("warmup_ready") and warmup_state == "ready" else
+            "unavailable" if warmup_state == "unavailable" else
+            "loading_model" if getattr(self._orch, "_warmup_thread", None) is not None
+            else "starting"
+        )
+        return {
+            "type": "runtime_status", "state": state, "ready": state == "ready",
+            "diagnostics": warmup,
+        }
+
     # ----------------------------------------------------------------- #
     #  Sprint 5 — ALWAYS-ON TTS + приветствие
     # ----------------------------------------------------------------- #
@@ -349,26 +377,9 @@ class JarvisWSServer:
             # Readiness is a first-class protocol event.  It follows the
             # legacy idle envelope so existing clients keep their first-frame
             # contract while newer clients render a real startup state.
-            try:
-                diagnostics = self._orch.runtime_diagnostics()
-            except Exception:
-                diagnostics = {}
-            warmup = diagnostics.get("warmup") if isinstance(diagnostics, dict) else {}
-            if not isinstance(warmup, dict):
-                warmup = {}
-            warmup_state = str(warmup.get("state", "") or "").casefold()
-            runtime_state = (
-                "ready" if diagnostics.get("warmup_ready") and warmup_state == "ready" else
-                "unavailable" if warmup_state == "unavailable" else
-                "loading_model" if getattr(self._orch, "_warmup_thread", None) is not None
-                else "starting"
-            )
-            await ws.send(json.dumps({
-                "type": "runtime_status",
-                "state": runtime_state,
-                "ready": bool(diagnostics.get("warmup_ready")),
-                "diagnostics": warmup,
-            }))
+            runtime_payload = self._runtime_status_payload()
+            runtime_state = str(runtime_payload["state"])
+            await ws.send(json.dumps(runtime_payload))
             if runtime_state == "loading_model":
                 async def _publish_readiness() -> None:
                     wait_ready = getattr(self._orch, "wait_for_runtime_ready", None)

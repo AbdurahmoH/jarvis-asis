@@ -60,6 +60,9 @@ def test_production_provider_does_not_disable_safe_runtime_reflexes(
         lambda **kwargs: pytest.fail("safe media reflex reached model discovery"),
     )
     monkeypatch.setattr("core.actions.media._open_target", lambda *args, **kwargs: True)
+    monkeypatch.setattr("core.actions.media.duckduckgo_search", lambda *args, **kwargs: [
+        {"title": "Track", "url": "https://www.youtube.com/watch?v=fixture", "snippet": ""},
+    ])
     monkeypatch.setattr("core.actions.media._request_playback", lambda: True)
     monkeypatch.setattr("core.verifier._active_audio_sessions", lambda: ["fixture-player"])
 

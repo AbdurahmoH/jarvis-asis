@@ -50,7 +50,10 @@ def test_direct_verified_execution_rejects_malformed_transport(settings):
 
 def test_compound_actions_require_every_clause_verified(settings):
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
-    with patch("core.actions.media._open_target", return_value=True):
+    with patch("core.actions.media.duckduckgo_search", return_value=[{
+             "title": "Track", "url": "https://www.youtube.com/watch?v=fixture", "snippet": "",
+         }]), patch("core.actions.media._open_target", return_value=True), \
+         patch("core.verifier._active_audio_sessions", return_value=["fixture-player"]):
         outcome = agent.execute("поставь музыку и который час")
 
     assert outcome.mode == "batch"
@@ -58,5 +61,5 @@ def test_compound_actions_require_every_clause_verified(settings):
     assert outcome.verified is True
     assert outcome.verification is not None
     assert outcome.verification.detail == "подтверждено 2/2 шагов"
-    assert "музыкальный плеер" in outcome.text.lower()
+    assert "video_opened" in outcome.text
     assert ":" in outcome.text

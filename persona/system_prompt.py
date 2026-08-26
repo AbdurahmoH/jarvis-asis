@@ -155,11 +155,6 @@ def build_agent_system_prompt(
 
     if profile_ctx:
         parts.append(f"Что ты знаешь о пользователе: {profile_ctx}")
-    else:
-        parts.append(
-            "Имени пользователя ты ещё не знаешь — если уместно, можешь "
-            "один раз коротко спросить, как его зовут."
-        )
 
     if memory_ctx:
         parts.append(f"Контекст из памяти: {memory_ctx}")
@@ -199,10 +194,13 @@ def build_system_prompt(
 
     # 2. Имя и обращение из настроек
     persona_name = getattr(getattr(settings, "persona", None), "name", "АТЛАС")
-    address = getattr(getattr(settings, "persona", None), "address", "сёр")
+    address = str(getattr(getattr(settings, "persona", None), "address", "") or "").strip()
     language = getattr(getattr(settings, "persona", None), "language", "ru")
 
-    parts.append(f"\n---\nИмя: {persona_name}. Обращение: «{address}». Язык ответа: {language}.")
+    identity = f"Имя: {persona_name}. Язык ответа: {language}."
+    if address:
+        identity += f" Предпочтительное обращение: «{address}»."
+    parts.append(f"\n---\n{identity}")
 
     # 3. Профиль пользователя
     if retrieved_context and retrieved_context.get("profile"):
@@ -239,10 +237,10 @@ def build_system_prompt(
     parts.append(
         "\n---\n"
         "ПРАВИЛА ОТВЕТА:\n"
-        "1. Обращайся «сёр».\n"
+        "1. Не начинай каждый ответ с обращения.\n"
         "2. Отвечай кратко (1-3 предложения или список). Никаких эссе.\n"
         "3. Используй контекст выше — не выдумывай факты.\n"
-        "4. Если не знаешь — скажи «не знаю, сёр» или «проверю».\n"
+        "4. Если не знаешь — прямо скажи об этом или проверь источник.\n"
         "5. Предупреждай перед опасными действиями.\n"
         "6. Можешь отказать, если запрос небезопасен или абсурден.\n"
         "7. Юмор сухой, по месту. Не спамь."
