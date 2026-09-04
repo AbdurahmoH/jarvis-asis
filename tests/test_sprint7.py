@@ -8,10 +8,19 @@ from core.voice.stt import VoiceActivityDetector
 from core.voice.wake_word import NoOpWakeWord
 
 
-def test_vad_silence_and_nonempty_fallback():
+def test_vad_silence_and_nonempty_fallback(monkeypatch):
     vad = VoiceActivityDetector()
+    monkeypatch.setattr(vad, "_vad", None)
+    monkeypatch.setattr(vad, "_silero", None)
     assert vad.is_speech(b"\x00" * 32) is False
     assert vad.is_speech(b"\x01" * 32) is True
+
+
+def test_vad_webrtcvad_with_valid_frame():
+    vad = VoiceActivityDetector(prefer_silero=False)
+    if vad._vad is not None:
+        silence_frame = b"\x00" * 640
+        assert vad.is_speech(silence_frame, sample_rate=16000) is False
 
 
 def test_trigger_fires_once_until_cooldown():

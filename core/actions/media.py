@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -12,6 +13,10 @@ from typing import Any, Dict
 from core.actions.base import ActionResult, Tool, ToolContext
 from core.actions.registry import DEFAULT_REGISTRY
 from core.actions.web_search import duckduckgo_search
+from core.network_guard import safe_http_get
+from core.utils.logger import get_logger
+
+log = get_logger(__name__)
 
 __all__ = ["PlayMusicTool", "play_music"]
 
@@ -110,12 +115,22 @@ def play_music(*, query: str = "", mood: str = "", uri: str = "", path: str = ""
     if source == "spotify":
         target = "spotify:search:" + urllib.parse.quote(query)
     else:
-        results = duckduckgo_search(f"site:youtube.com/watch {query}", max_results=5)
+        results = duckduckgo_search(f"site:youtube.com/watch {query}", max_results=5, timeout=1.5)
         direct = next((
             str(item.get("url") or "") for item in results
             if "youtube.com/watch" in str(item.get("url") or "")
             or "youtu.be/" in str(item.get("url") or "")
         ), "")
+        if not direct:
+            try:
+                search_url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+                resp = safe_http_get(search_url, timeout=1.5, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                m = re.search(r'"videoId":\s*"([^"]+)"', resp.text)
+                if m:
+                    direct = f"https://www.youtube.com/watch?v={m.group(1)}"
+            except Exception as exc:
+                log.debug("Direct YouTube search fallback failed: %s", exc)
         target = direct or ("https://www.youtube.com/results?search_query=" + urllib.parse.quote(query))
     try:
         opened = _open_target(target, source=source)

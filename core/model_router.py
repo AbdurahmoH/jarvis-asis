@@ -552,6 +552,18 @@ class ModelRouter:
                 chain.append(tier)
         return chain
 
+    def is_llm_available(self) -> bool:
+        """Доступность cloud-провайдера по конфигурации (health-эквивалент).
+
+        Используется semantic-роутером как ctx.llm_available: реальный
+        признак, а не флаг режима deepseek_brain_mode.
+        """
+        try:
+            return bool(self._settings.is_tier_available(Tier.FAST))
+        except Exception as exc:
+            log.debug("Проверка доступности провайдера не удалась: %s", exc)
+            return False
+
     def _is_available(self, tier: Tier) -> bool:
         """Реальная доступность тира по конфигурации (ключ / путь к модели)."""
         try:

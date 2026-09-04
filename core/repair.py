@@ -325,8 +325,13 @@ class RepairLoop:
         """Эвристика: пытается «починить» аргументы с путями.
 
         - раскрывает ~ и переменные среды;
-        - для относительных путей пытается искать в documents_dir;
-        - создаёт родительскую директорию для write-операций, если её нет.
+        - для относительных путей оставляет как есть (executor разрешит по проекту).
+
+        ВАЖНО (безопасность): mkdir намеренно убран. Создание директорий —
+        это side effect с потенциальным выходом за пределы scope. Если
+        родительская директория отсутствует — это ошибка «путь недоступен»,
+        а не то, что repair loop должен молча исправлять. Создание директорий
+        разрешено только явным инструментом внутри documents_dir scope.
         """
         healed = dict(args)
         for key, val in list(args.items()):
@@ -335,14 +340,10 @@ class RepairLoop:
             if "\\" not in val and "/" not in val:
                 continue
             p = Path(val).expanduser()
-            if p.is_absolute() and not p.exists():
-                # Может быть родитель не создан — создадим для write-сценариев.
-                try:
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    healed[key] = str(p)
-                except OSError:
-                    pass
-            elif not p.is_absolute():
-                # относительный — оставляем как есть (executor разрешит по проекту)
-                pass
+            if p.is_absolute():
+                # Раскрываем переменные окружения, но не создаём директории.
+                expanded = str(p)
+                if expanded != val:
+                    healed[key] = expanded
+            # относительный — оставляем как есть (executor разрешит по проекту)
         return healed

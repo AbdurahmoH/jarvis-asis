@@ -101,6 +101,8 @@ class Capability:
     tags: List[str] = field(default_factory=list)
     model_visible: bool = True          # доступно ли generic user-goal discovery
     evidence_scope: str = "system"      # system | internal | user_visible
+    examples_ru: List[str] = field(default_factory=list)
+    counter_examples_ru: List[str] = field(default_factory=list)
 
     @classmethod
     def from_tool(cls, tool: Any, **overrides: Any) -> "Capability":
@@ -412,6 +414,17 @@ class CapabilityRegistry:
         for tool in self._tools.list_tools():
             if tool.name not in self._caps:
                 self._caps[tool.name] = Capability.from_tool(tool)
+
+        # 3) Обогащение разговорными примерами и контр-примерами (Шаг 1)
+        from core.routing.capability_examples_ru import (
+            CAPABILITY_COUNTER_EXAMPLES_RU,
+            CAPABILITY_EXAMPLES_RU,
+        )
+        for name, cap in self._caps.items():
+            if name in CAPABILITY_EXAMPLES_RU and not cap.examples_ru:
+                cap.examples_ru = list(CAPABILITY_EXAMPLES_RU[name])
+            if name in CAPABILITY_COUNTER_EXAMPLES_RU and not cap.counter_examples_ru:
+                cap.counter_examples_ru = list(CAPABILITY_COUNTER_EXAMPLES_RU[name])
 
     # ------------------------------------------------------------------ #
     #  Доступ

@@ -1,0 +1,31 @@
+{
+  "calibrated_at": "2026-09-04T12:50:00.078184",
+  "confidence_threshold": 0.42,
+  "margin_threshold": 0.05,
+  "dev_kind_accuracy": 0.8696,
+  "dev_high_risk_fn": 0,
+  "k": 7,
+  "alpha": 1.5,
+  "tau": 0.08,
+  "metrics_on_dev": {
+    "dev_samples": 184,
+    "kind_accuracy": 0.8696,
+    "tool_accuracy": 0.9,
+    "negatives_fp_rate": 0.0,
+    "negatives_fp": "0/42",
+    "high_risk_fn": 0,
+    "unsupported_wrong_sub_rate": 0.0,
+    "unsupported_wrong_sub": "0/20",
+    "clarify_rate": 0.0543,
+    "clarify_count": "10/184",
+    "harmful_error_rate": 0.038,
+    "tier_counts": {
+      "semantic": 174,
+      "clarify": 10
+    }
+  },
+  "grid_boundary_check": {
+    "conf_on_boundary": false,
+    "marg_on_boundary": false
+  }
+}

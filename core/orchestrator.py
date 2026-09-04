@@ -21,26 +21,43 @@ import json
 import re
 import threading
 import time
+from dataclasses import replace as _dataclass_replace
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from config.settings import Settings
-from core.actions import DEFAULT_REGISTRY, ToolContext, execute_tool
+from core.actions import DEFAULT_REGISTRY
 from core.authority import AuthorityProposal, AuthorityRequest, AuthorityStore, ProvenanceKind
 from core.agent import Agent, pick_acknowledgement
 from core.capabilities import CAPABILITIES
 from core.cognitive import CognitiveOrchestrator
 from core.memory import MemoryRetriever
 from core.memory.taste import TasteProfile
-from core.model_router import ModelRouter, classify_conversation, estimate_complexity
-from core.research import is_research_goal
+from core.model_router import ModelRouter, estimate_complexity
+from core.memory.profile import load_profile
+from core.routing.semantic_router import (
+    RoutingContext as SemanticRoutingContext,
+    RoutingDecision as SemanticRoutingDecision,
+    assess_risk as semantic_assess_risk,
+    get_router,
+    intent_category as semantic_intent_category,
+    route as semantic_route,
+)
 from core.router import CouncilRouter
-from core.router.intent_router import resolve_keyword_tool
 from core.understanding import (
     NaturalMissionCoordinator, NaturalMissionInterpreter, QuickAnswerEngine,
     Route, SemanticMode, UnderstandingLayer,
 )
-from core.state import JarvisState, ActionResult, new_state, push_message, trim_short_memory
-from core.task_runtime import Mission, MissionStatus, MissionTrigger, TaskEvent, TaskRuntime
+from core.state import JarvisState, new_state, push_message, trim_short_memory
+from core.task_runtime import (
+    EVENT_TASK_COMPLETED,
+    EVENT_TASK_FAILED,
+    EVENT_TASK_PROGRESS,
+    Mission,
+    MissionStatus,
+    MissionTrigger,
+    TaskEvent,
+    TaskRuntime,
+)
 from core.voice import (
     AssistantOutput, ErrorCategory, ErrorInfo, PiperTTS, SpeechRenderer, TTSQueue,
     build_wake_word_detector, assistant_output_from_outcome, show_toast,
@@ -60,12 +77,6 @@ from core.cognitive_kernel import (
 __all__ = ["Orchestrator"]
 
 log = get_logger(__name__)
-
-# Регулярка для извлечения tool_call из ответа модели
-_TOOL_CALL_PATTERN = re.compile(
-    r"TOOL_CALL:\s*(\{.*?\})",
-    re.DOTALL
-)
 
 
 class Orchestrator:
@@ -221,6 +232,23 @@ class Orchestrator:
             output_callback=self._proactive_output,
             reminder_check_callback=self._check_reminders,
         )
+
+        # БАГ 3 FIX: подключаем callback к TaskManager после создания proactor.
+        # get_default_manager() создаёт менеджер без callback → напоминания
+        # молча терялись. Теперь _fire() вызывает _on_reminder_fired, который
+        # выводит текст через typed AssistantOutput (не raw str).
+        def _on_reminder_fired(reminder_id: str, text: str) -> None:
+            try:
+                message = f"Напоминание: {text}"
+                log.info("Напоминание сработало #%s: %s", reminder_id, text[:80])
+                self._output_callback(message)
+                self._queue_assistant_output(
+                    AssistantOutput.natural(message, speech_mode="focused")
+                )
+            except Exception as exc:
+                log.error("Ошибка вывода напоминания #%s: %s", reminder_id, exc)
+
+        self._task_manager._callback = _on_reminder_fired
         self._scheduler = BackgroundScheduler(
             settings=settings,
             task_manager=self._task_manager,
@@ -242,6 +270,8 @@ class Orchestrator:
             "ready_before_first_request": False,
         }
         self._warmup_ready = threading.Event()
+        # Шаг 6: прогрев semantic-роутера и его статус готовности.
+        self._router_diagnostics: Dict[str, Any] = {"ready": False}
         self._intake = UniversalIntake()
         self._tutor = TutorEngine()
 
@@ -321,16 +351,248 @@ class Orchestrator:
         if callable(clear):
             clear()
 
+    # ------------------------------------------------------------------ #
+    #  Единая точка решения (2026-09-05): semantic_route()
+    # ------------------------------------------------------------------ #
+
+    _LLM_PROBE_TTL = 30.0
+
+    def _llm_available_cached(self) -> bool:
+        """Реальная доступность провайдера (health-эквивалент, кэш 30 c)."""
+        now = time.monotonic()
+        cached = getattr(self, "_llm_probe", None)
+        if cached is not None and now - cached[0] < self._LLM_PROBE_TTL:
+            return bool(cached[1])
+        try:
+            available = bool(self._model_router.is_llm_available())
+        except Exception as exc:
+            log.debug("LLM availability probe failed: %s", exc)
+            available = False
+        self._llm_probe = (now, available)
+        return available
+
+    def _route_cached(self, text: str) -> SemanticRoutingDecision:
+        """semantic_route с memo последнего запроса (одна маршрутизация на виток)."""
+        memo = getattr(self, "_route_memo", None)
+        if memo is not None and memo[0] == text:
+            return memo[1]
+        llm_available = self._llm_available_cached()
+        decision = semantic_route(
+            text,
+            SemanticRoutingContext(
+                llm_available=llm_available,
+                fast_llm_fn=self._fast_llm_route if llm_available else None,
+                addressing=self._profile_addressing(),
+            ),
+        )
+        self._route_memo = (text, decision)
+        return decision
+
+    _FAST_LLM_KINDS = {"action", "question", "chat", "mission", "fresh_data"}
+
+    def _fast_llm_route(self, text: str,
+                        candidates: List[Tuple[str, float]]) -> Dict[str, Any]:
+        """FAST LLM tier semantic-роутера: разбор серой зоны провайдером.
+
+        Возвращает {"kind", "tool", "confidence"} или {} — роутер тогда
+        сам уходит в clarify/fallback. Никогда не бросает исключений.
+        """
+        try:
+            from core.llm import Tier, get_llm_backend
+            backend = get_llm_backend(self._settings, Tier.FAST)
+            options = ", ".join(name for name, _score in (candidates or [])[:4])
+            prompt = (
+                "Классифицируй реплику пользователя. Ответь ТОЛЬКО валидным "
+                'JSON без пояснений: {"kind": "...", "tool": null}, где kind — '
+                "одно из action | question | chat | mission | fresh_data, "
+                f"tool — имя инструмента из списка: {options or 'нет'} или null.\n"
+                f"Реплика: «{text}»"
+            )
+            raw = backend.chat(
+                [{"role": "user", "content": prompt}],
+                max_tokens=64, temperature=0.0,
+            )
+            body = str(raw or "")
+            start, end = body.find("{"), body.rfind("}")
+            if start < 0 or end <= start:
+                return {}
+            payload = json.loads(body[start:end + 1])
+            kind = str(payload.get("kind") or "")
+            if kind not in self._FAST_LLM_KINDS:
+                return {}
+            tool = payload.get("tool")
+            return {"kind": kind, "tool": tool, "confidence": 0.8}
+        except Exception as exc:
+            log.debug("fast_llm_route не удался: %s", exc)
+            return {}
+
+    def _profile_addressing(self) -> str:
+        """Обращение из профиля пользователя; пустой профиль — без обращения."""
+        try:
+            profile = load_profile(self._settings)
+            return str((profile.get("name") or "")).strip()
+        except Exception as exc:
+            log.debug("Адресация из профиля недоступна: %s", exc)
+            return ""
+
+    @staticmethod
+    def _decision_from_metadata(mission: Mission) -> Optional[SemanticRoutingDecision]:
+        payload = (getattr(mission, "metadata", None) or {}).get("routing_decision")
+        if not payload:
+            return None
+        try:
+            return SemanticRoutingDecision.from_dict(payload)
+        except Exception as exc:
+            log.debug("Не удалось восстановить routing decision миссии: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------ #
+    #  Clarify-сессия (шаг 4): awaiting clarification + TTL 60 c
+    # ------------------------------------------------------------------ #
+
+    _CLARIFY_TTL_SEC = 60.0
+
+    def _remember_clarification(self, question: str, decision: SemanticRoutingDecision,
+                                original_text: str = "") -> None:
+        self._clarification = {
+            "question": question,
+            "candidates": list((decision.candidates or [])[:2]),
+            "base": decision.to_dict(),
+            "original": original_text,
+            "ts": time.monotonic(),
+        }
+
+    def _pending_clarification(self) -> Optional[Dict[str, Any]]:
+        pending = getattr(self, "_clarification", None)
+        if not pending:
+            return None
+        if time.monotonic() - pending["ts"] > self._CLARIFY_TTL_SEC:
+            self._clarification = None
+            return None
+        return pending
+
+    def _clear_pending_clarification(self) -> None:
+        self._clarification = None
+
+    def _resolve_clarification(self, pending: Dict[str, Any],
+                               reply_text: str) -> Optional[Tuple[str, str]]:
+        """Резолвит короткий ответ пользователя по топ-2 кандидатам.
+
+        Возвращает (candidate_id, цель_для_исполнения) или None, если
+        реплика не похожа на выбор — тогда она идёт полным маршрутом.
+        """
+        import re as _re
+
+        reply = (reply_text or "").strip().casefold()
+        if not reply:
+            return None
+        candidates = pending.get("candidates") or []
+        if not candidates:
+            return None
+        first = candidates[0][0]
+        second = candidates[1][0] if len(candidates) > 1 else None
+
+        verb_hints = {
+            "open_app": ("открой", "открыть", "запусти", "включи"),
+            "close_app": ("закрой", "закрыть", "выруби", "заверши"),
+            "volume": ("громче", "тише", "потише", "погромче"),
+            "current_time": ("время", "час"),
+            "system_status": ("статус", "состояние"),
+            "play_music": ("музык", "песн", "трек"),
+            "list_files": ("список файлов", "покажи файлы", "файлы"),
+            "search_files": ("найди", "поищи", "искать"),
+            "weather": ("погод",),
+            "public_data": ("курс", "валют", "новост"),
+            "add_reminder": ("напомни",),
+            "mission": ("поручение", "задание", "займись", "разбери"),
+            "chat": ("поболтать", "разговор", "болтать"),
+            "question": ("вопрос",),
+        }
+        for cid in (first, second):
+            if cid is None:
+                continue
+            for hint in verb_hints.get(cid, ()):
+                if hint in reply:
+                    return cid, (reply_text or "").strip()
+        negative = _re.match(r"^\s*(нет|не|нет,)\b", reply)
+        if negative and second:
+            return second, (reply_text or "").strip()
+        if _re.search(r"\b(да|ага|ок|давай|угу|верно|перв\w+)\b", reply):
+            return first, (reply_text or "").strip()
+        return None
+
+    def _decision_for_candidate(self, base: SemanticRoutingDecision,
+                                candidate_id: str) -> SemanticRoutingDecision:
+        """Синтезирует decision выбранного кандидата clarify-сессии (шаг 4).
+
+        Риск пересчитывается по выбранному инструменту — правило без
+        исключений: destructive/write подтверждается независимо от пути.
+        """
+        candidate_id = (candidate_id or "").strip()
+        if candidate_id in {"chat", "question", "mission"}:
+            kind: str = candidate_id
+            tool: Optional[str] = None
+        elif candidate_id in {"weather", "public_data"}:
+            kind, tool = "fresh_data", candidate_id
+        else:
+            kind, tool = "action", candidate_id or None
+        raw = str((base.trace or {}).get("raw_text") or "")
+        try:
+            risk_level, needs_conf = semantic_assess_risk(tool, None, raw)
+        except Exception as exc:
+            log.debug("Пересчёт риска clarify-кандидата не удался: %s", exc)
+            risk_level, needs_conf = base.risk, base.needs_confirmation
+        return _dataclass_replace(
+            base,
+            kind=kind,
+            tool=tool,
+            confidence=max(base.confidence, 0.6),
+            tier="clarify_resolve",
+            risk=risk_level,
+            needs_confirmation=needs_conf,
+            trace={**(base.trace or {}), "clarify_resolved": candidate_id},
+        )
+
+    def _emit_route_event(self, decision: SemanticRoutingDecision,
+                          llm_available: bool) -> None:
+        """Шаг 7: объяснимость — маршрут в WS-событие (если слушатели есть)."""
+        try:
+            payload = {
+                "tier": decision.tier,
+                "kind": decision.kind,
+                "tool": decision.tool or "",
+                "confidence": round(decision.confidence, 3),
+                "margin": round(float((decision.trace or {}).get("margin_agg", 0.0)), 3),
+                "top3": [c for c, _ in (decision.candidates or [])[:3]],
+                "risk": decision.risk,
+                "needs_confirmation": decision.needs_confirmation,
+                "latency_ms": round(float((decision.trace or {}).get("latency_ms", 0.0)), 2),
+                "llm_available": bool(llm_available),
+            }
+            log.info("route: %s", json.dumps(payload, ensure_ascii=False))
+        except Exception as exc:
+            log.debug("route event не отправлен: %s", exc)
+
     def _new_state(self, text: str, *, include_executive: bool = True) -> JarvisState:
-        """Create a state with deterministic intent and bounded executive context."""
+        """Create a state with semantic routing context and bounded executive context."""
         state = new_state(text)
-        state["intent"] = resolve_keyword_tool(text, text)
+        decision = self._route_cached(text)
+        state["intent"] = semantic_intent_category(decision)
+        # Шаг 7: объяснимость — полное решение маршрутизации в состоянии
+        # (WS-мост транслирует его в событие route).
+        routing_dict = decision.to_dict()
+        routing_dict["margin"] = round(
+            float((decision.trace or {}).get("margin_agg", 0.0)), 3)
+        routing_dict["latency_ms"] = round(
+            float((decision.trace or {}).get("latency_ms", 0.0)), 2)
+        routing_dict["llm_available"] = self._llm_available_cached()
+        state["routing_decision"] = routing_dict
         try:
             state["task_contract"] = self._intake.classify(text).to_dict()
         except Exception as exc:
             log.debug("Universal intake skipped: %s", exc)
             state["task_contract"] = {}
-        state["latency_budget"] = self._latency_budget_for(state.get("intent"), text)
+        state["latency_budget"] = self._latency_budget_for(state.get("intent"))
         if include_executive:
             try:
                 state["executive"] = self._agent.executive.snapshot()
@@ -340,11 +602,11 @@ class Orchestrator:
         return state
 
     @staticmethod
-    def _latency_budget_for(intent: Optional[str], text: str) -> Dict[str, Any]:
-        fast = intent in {"app", "system", "media"} and len((text or "").strip()) <= 180
+    def _latency_budget_for(intent: Optional[str]) -> Dict[str, Any]:
+        fast = intent in {"app", "system", "media"}
         if fast:
             budget = LatencyBudget("fast", 600.0, 1000.0, 1500.0)
-        elif intent == "web" or is_research_goal(text):
+        elif intent == "web":
             budget = LatencyBudget("research", 8000.0, 15000.0, 30000.0, 3000.0)
         else:
             budget = LatencyBudget("deliberate", 8000.0, 15000.0, 30000.0, 2500.0)
@@ -370,6 +632,44 @@ class Orchestrator:
             latency_ms=elapsed_ms, path=path,
         ).to_dict())
         return state
+
+    def _warmup_router(self) -> None:
+        """Шаг 6: прогрев semantic-роутера до объявления готовности (<= 40 мс)."""
+        try:
+            started = time.perf_counter()
+            router = get_router()
+            warm_ms = float(router.warmup() or 0.0)
+            probe_start = time.perf_counter()
+            semantic_route("статус системы", SemanticRoutingContext(llm_available=False))
+            probe_ms = (time.perf_counter() - probe_start) * 1000.0
+            self._router_diagnostics = {
+                "ready": probe_ms <= 40.0,
+                "warmup_ms": round(warm_ms, 2),
+                "probe_ms": round(probe_ms, 2),
+            }
+            log.info("Semantic router warmup: %s", self._router_diagnostics)
+        except Exception as exc:
+            log.error("Semantic router warmup failed: %s", exc)
+            self._router_diagnostics = {"ready": False, "error": str(exc)}
+
+    def provider_status(self) -> str:
+        """Шаг 6: статус провайдера отдельно от режима deepseek_brain_mode.
+
+        configured — ключ задан, health-проба ещё не выполнялась;
+        ready / unavailable — по результату пробы.
+        """
+        try:
+            from core.llm import Tier
+            key_configured = bool(self._settings.is_tier_available(Tier.FAST))
+        except Exception as exc:
+            log.debug("Проверка конфигурации провайдера не удалась: %s", exc)
+            return "unavailable"
+        if not key_configured:
+            return "unavailable"
+        probed = getattr(self, "_llm_probe", None)
+        if probed is None:
+            return "configured"
+        return "ready" if bool(probed[1]) else "unavailable"
 
     def _start_local_warmup(self) -> None:
         """Warm local backend before the first user request and record diagnostics."""
@@ -525,6 +825,9 @@ class Orchestrator:
                 return
             self._running = True
 
+            # Шаг 6: semantic-роутер прогревается до объявления готовности —
+            # route() обязан отвечать за <= 40 мс с первого запроса.
+            self._warmup_router()
             self._start_local_warmup()
             # Never hold the WS/UI socket on model loading.  The readiness
             # event is reported through the runtime_status handshake; reflex
@@ -637,6 +940,25 @@ class Orchestrator:
             "music_preference": self._taste.context(),
         })
 
+        # Шаг 4: clarify-цикл. Если сессия ждёт уточнения (TTL 60 c),
+        # короткая реплика ("да", "первое", "закрой") резолвится по топ-2
+        # кандидатам без полного перезапуска; исполняется исходный запрос
+        # с синтезированным decision выбранного кандидата.
+        pending = self._pending_clarification()
+        if pending is not None:
+            resolved = self._resolve_clarification(pending, text)
+            if resolved is not None:
+                cid, _reply = resolved
+                self._clear_pending_clarification()
+                try:
+                    base = SemanticRoutingDecision.from_dict(pending.get("base"))
+                except Exception as exc:
+                    log.debug("Clarify base decision восстановить не удалось: %s", exc)
+                    base = None
+                if base is not None:
+                    text = str(pending.get("original") or _reply or text)
+                    self._route_memo = (text, self._decision_for_candidate(base, cid))
+
         # Understanding Layer: классифицируем ОДИН раз сразу после старта —
         # результат переиспользуют и reflex, и быстрый ответ, и выбор
         # «синхронно vs фон» ниже (раньше это делали три рассогласованных
@@ -674,7 +996,31 @@ class Orchestrator:
         # stale mission (for example, "Системный статус" after "Открой
         # блокнот"). Conversation and voice addressing still use the
         # cognitive layer; explicit actions never pay that ambiguity tax.
-        pre_intent = resolve_keyword_tool(text, text)
+        # Единая точка решения (2026-09-05): semantic_route вместо
+        # resolve_keyword_tool — intent_category(decision) это тонкий
+        # адаптер, текст здесь НЕ переклассифицируется.
+        decision = self._route_cached(text)
+        pre_intent = semantic_intent_category(decision)
+        self._emit_route_event(decision, self._llm_available_cached())
+
+        # Шаг 4: clarify как продуктовое поведение. semantic-уточнение
+        # уходит обычным assistant_output (НЕ confirmation_required),
+        # сессия запоминается с TTL 60 c.
+        if decision.kind == "clarify" and decision.clarify_question:
+            self._remember_clarification(decision.clarify_question, decision, text)
+            state = self._new_state(text)
+            self._session.push("user", text)
+            self._session.push("assistant", decision.clarify_question)
+            self._session.to_state(state)
+            output = AssistantOutput.natural(decision.clarify_question, speech_mode="focused")
+            spoken = self._queue_assistant_output(output)
+            self._output_callback(decision.clarify_question)
+            state["response"] = decision.clarify_question
+            state["tts_text"] = spoken
+            state["assistant_output"] = output.to_dict()
+            state["mode"] = "clarification"
+            return self._stamp_latency(state, request_started, "fast")
+
         cognitive_turn = None
         if pre_intent not in {"app", "system", "media", "file", "browser"}:
             # Text arriving through the explicit chat/WS input is implicitly
@@ -696,7 +1042,8 @@ class Orchestrator:
             return self._stamp_latency(self._direct_cognitive_response(text, cognitive_turn.response), request_started, "fast")
         if cognitive_turn is not None and cognitive_turn.action in {"continue", "retry"} and cognitive_turn.goal:
             text = cognitive_turn.goal
-            pre_intent = resolve_keyword_tool(text, text)
+            decision = self._route_cached(text)
+            pre_intent = semantic_intent_category(decision)
             understanding = self._understanding.understand(text, channel=channel)
 
         # Sprint 11: natural queries are answered from evidence-backed local
@@ -785,7 +1132,7 @@ class Orchestrator:
 
         # Синхронный путь через единый агентный цикл
         # (intent -> risk -> MODEL SELECTION -> tool -> verify -> repair).
-        outcome = self._agent.execute(text)
+        outcome = self._agent.execute(text, decision=decision)
         if outcome.tool_used or outcome.mode in {"capability", "unknown_task"}:
             self._living.observe_capability_outcome(
                 text, verified=outcome.verified,
@@ -879,12 +1226,13 @@ class Orchestrator:
         # A conversational question must stay on the immediate path.  The
         # previous score-only check sent "почему..." to a background mission,
         # showing an ACK while the CPU model kept thinking for tens of seconds.
-        intent = resolve_keyword_tool(goal, goal)
-        conversational, _ = classify_conversation(goal, intent)
-        if conversational:
+        decision = self._route_cached(goal)
+        if decision.kind in ("chat", "question"):
             return False
-        if is_research_goal(goal):
+        if decision.kind == "mission":
             return True
+        if decision.kind == "action" and decision.tool is None:
+            return False  # unsupported: честный отказ синхронно
         cx = estimate_complexity(goal)
         # LOCAL_THRESHOLD из ModelRouter (0.35): выше — в фон.
         return cx.score >= 0.35
@@ -964,7 +1312,8 @@ class Orchestrator:
 
         # §5 — ACK формируется мгновенно. Если доступна локальная модель —
         # обогащается контекстной фразой (П1 §1.2); при сбое — canned fallback.
-        intent = resolve_keyword_tool(goal, goal)
+        decision = self._route_cached(goal)
+        intent = semantic_intent_category(decision)
         # ACK must never pay the model-load/inference cost.  The mission
         # worker owns all deliberate reasoning after this line.
         ack = pick_acknowledgement(
@@ -983,6 +1332,8 @@ class Orchestrator:
         unsubscribe: Optional[Callable[[], None]] = None
 
         if on_event is not None:
+            _TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired"}
+
             def _filtered(event: TaskEvent) -> None:
                 if task_holder["id"] is None or event.task_id != task_holder["id"]:
                     return
@@ -990,9 +1341,32 @@ class Orchestrator:
                 if marker in seen:
                     return
                 seen.add(marker)
-                on_event(event)
+                try:
+                    on_event(event)
+                except Exception as exc:
+                    log.debug("Подписчик события упал: %s", exc)
+                # ДЫРА 1 FIX: отписка при ЛЮБОМ терминальном состоянии миссии
+                # (completed/failed/cancelled/expired). Раньше unsubscribe
+                # вызывался только в happy-path _mission_runner; при исключении
+                # в рантайме, отмене или истечении миссии подписка оставалась
+                # навсегда — утечка при долгой работе.
+                etype = str(getattr(event, "event_type", "") or "")
+                status = str((getattr(event, "payload", None) or {}).get("status") or "")
+                terminal = (
+                    etype in (EVENT_TASK_COMPLETED, EVENT_TASK_FAILED)
+                    or (etype == EVENT_TASK_PROGRESS and status in _TERMINAL_STATUSES)
+                )
+                if terminal:
+                    unsub = task_holder.get("unsub")
+                    if callable(unsub):
+                        task_holder["unsub"] = None
+                        try:
+                            unsub()
+                        except Exception as exc:
+                            log.debug("Unsubscribe миссии %s: %s", task_holder["id"], exc)
 
             unsubscribe = self._runtime.subscribe(_filtered)
+            task_holder["unsub"] = unsubscribe
 
         kernel_handle = self._kernel.submit(goal, context={"channel": "text"})
         kernel_record = self._kernel.ledger.load(kernel_handle.id)
@@ -1002,6 +1376,7 @@ class Orchestrator:
             runner=self._mission_runner,
             metadata={"intent": intent, "source": "user",
                       "task_contract": contract_payload,
+                      "routing_decision": decision.to_dict(),
                       "kernel_mission_id": kernel_handle.id,
                       "kernel_task_id": kernel_handle.task_id},
         )
@@ -1018,6 +1393,19 @@ class Orchestrator:
                         on_event(event)
                     except Exception as exc:
                         log.debug("Подписчик события упал: %s", exc)
+            # ДЫРА 1 FIX (2/2): миссия может добежать до терминального статуса
+            # раньше, чем submit_goal вернёт управление (быстрый runner, hard
+            # cap очереди и т.п.). Тогда терминальное событие ушло в момент,
+            # когда task_holder["id"] ещё был None — отписка через _filtered
+            # не сработает. Проверяем статус здесь и снимаем подписку сами.
+            if mission.status.is_terminal:
+                unsub = task_holder.get("unsub")
+                if callable(unsub):
+                    task_holder["unsub"] = None
+                    try:
+                        unsub()
+                    except Exception as exc:
+                        log.debug("Unsubscribe миссии %s: %s", mission.task_id, exc)
 
         # Немедленное подтверждение пользователю (§5).
         self._output_callback(ack)
@@ -1093,7 +1481,7 @@ class Orchestrator:
         if self._session is not None:
             self._session.push("user", mission.goal)
 
-        result_text = self._agent.run_mission(mission, cancel)
+        result_text = self._agent.run_mission(mission, cancel, decision=self._decision_from_metadata(mission))
 
         verification = mission.verification or {}
         verified = bool(verification.get("verified") is True)
@@ -1129,8 +1517,23 @@ class Orchestrator:
             if self._session is not None:
                 self._session.push("assistant", result_text)
 
+            # БАГ 2 FIX: помечаем что _output_callback будет вызван для этой
+            # миссии. _on_task_event в ws_server проверяет этот флаг чтобы
+            # не создавать дублирующий пузырь из EVENT_TASK_COMPLETED.
+            mission.metadata["_output_sent"] = True
             self._output_callback(result_text)
             self._queue_assistant_output(AssistantOutput.natural(result_text))
+
+        # ДЫРА 1 FIX: вызываем unsubscribe при завершении миссии.
+        # submit_goal сохраняет callable в metadata["_unsubscribe"] чтобы
+        # отписаться от EventBus. Без этого каждая миссия с on_event оставляет
+        # висячую подписку → утечка памяти при долгой работе.
+        unsub = mission.metadata.pop("_unsubscribe", None)
+        if callable(unsub):
+            try:
+                unsub()
+            except Exception as exc:
+                log.debug("Unsubscribe миссии %s: %s", mission.task_id, exc)
 
         return result_text
 
@@ -1217,78 +1620,11 @@ class Orchestrator:
     #  Внутренние методы
     # --------------------------------------------------------------------- #
 
-    def _maybe_execute_tool(self, state: JarvisState) -> Optional[ActionResult]:
-        """Проверяет, есть ли в ответе TOOL_CALL, и выполняет его.
-
-        Формат в ответе модели:
-            TOOL_CALL:{"name": "tool_name", "args": {"key": "value"}}
-
-        Returns:
-            ActionResult если инструмент выполнен, None если нет вызова.
-        """
-        response = state.get("response", "")
-        match = _TOOL_CALL_PATTERN.search(response)
-        if not match:
-            return None
-
-        try:
-            tool_call = json.loads(match.group(1))
-            tool_name = tool_call.get("name")
-            args = tool_call.get("args", {})
-
-            if not tool_name:
-                log.warning("TOOL_CALL без имени: %s", tool_call)
-                return None
-
-            log.info("Выполнение tool_call: %s(%s)", tool_name, redact_args(args))
-
-            context = ToolContext(
-                user_id="default",
-                settings=self._settings,
-                state=state,
-                extra={"task_runtime": self._runtime},
-            )
-            result = execute_tool(self._registry, tool_name, args, context)
-
-            # Убираем маркер из ответа для чистоты
-            clean_response = _TOOL_CALL_PATTERN.sub("", response).strip()
-            state["response"] = clean_response
-
-            return result
-
-        except json.JSONDecodeError as exc:
-            log.error("TOOL_CALL JSON decode ошибка: %s", exc)
-            return None
-        except Exception as exc:
-            log.error("TOOL_CALL выполнение ошибка: %s", exc)
-            return None
-
-    def _reask_with_tool_result(
-        self,
-        state: JarvisState,
-        tool_result: ActionResult,
-    ) -> JarvisState:
-        """Переспрашивает модель с результатом инструмента.
-
-        Добавляет tool_result в контекст как tool message и прогоняет council снова.
-        """
-        # Формируем сообщение с результатом
-        result_text = "Результат инструмента"
-        if tool_result.ok:
-            result_text += f": {tool_result.output}"
-        else:
-            result_text += f" (ошибка): {tool_result.error}"
-
-        # Добавляем в short-term как tool message
-        self._session.push("tool", result_text)
-        self._session.to_state(state)
-
-        # Обновляем memory retrieve (на тот случай, если инструмент добавил факты)
-        state = self._memory.retrieve(state)
-
-        # Переспрашиваем council
-        state = self._council.route(state)
-        return state
+    # БАГ 12 FIX: второй (не гейтнутый) путь исполнения инструментов,
+    # который жил здесь ранее, удалён целиком — см. тесты/regressions.
+    # Единственный путь исполнения инструментов — Agent
+    # (assess_risk → route guard → confirmation → verifier), native tool
+    # calls парсятся в core/llm/tool_calls.py.
 
     def _default_output(self, text: str) -> None:
         """Дефолтный вывод: print + toast."""
@@ -1380,6 +1716,8 @@ class Orchestrator:
         return {
             "warmup": dict(self._warmup_diagnostics),
             "warmup_ready": self._warmup_ready.is_set(),
+            "router": dict(getattr(self, "_router_diagnostics", {"ready": False})),
+            "provider": self.provider_status(),
             "kernel": {"ledger": str(self._kernel.root / "missions.db"),
                        "capabilities": len(self._kernel.capabilities.snapshot())},
             "budgets": {

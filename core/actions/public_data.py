@@ -18,6 +18,7 @@ input_schema/run) в ``DEFAULT_REGISTRY`` — тот же паттерн, что
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from datetime import datetime
 
 import requests
 
@@ -30,6 +31,7 @@ __all__ = [
     "news_search",
     "wiki_summary",
     "currency_rates",
+    "cbr_currency_rates",
 ]
 
 log = get_logger(__name__)
@@ -43,7 +45,7 @@ _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jarvis/2.4"
 # --------------------------------------------------------------------------- #
 
 
-from core.data.public_sources import currency_rates, news_search, wiki_summary
+from core.data.public_sources import cbr_currency_rates, currency_rates, news_search, wiki_summary
 
 
 # --------------------------------------------------------------------------- #
@@ -91,7 +93,7 @@ class PublicDataTool(Tool):
             if kind == "wiki":
                 return self._wiki(query)
             if kind == "currency":
-                return self._currency()
+                return self._currency(query)
         except Exception as exc:  # noqa: BLE001
             return ActionResult(self.name, args, False, error=f"public_data: {exc}")
         return ActionResult(self.name, args, False, error=f"unknown kind: {kind}")
@@ -122,14 +124,105 @@ class PublicDataTool(Tool):
                             {"text": text})
 
     @staticmethod
-    def _currency() -> ActionResult:
+    def _currency(query: str = "") -> ActionResult:
+        q = (query or "").lower()
+        if "eur" in q or "евро" in q:
+            target, name = "EUR", "Евро"
+        elif "cny" in q or "юан" in q:
+            target, name = "CNY", "Юань"
+        elif "kzt" in q or "тенге" in q:
+            target, name = "KZT", "Тенге"
+        else:
+            target, name = "USD", "Доллар"
+
+        # Первичный источник для рублёвых пар — ЦБ РФ (cbr-xml-daily.ru)
+        cbr_data = cbr_currency_rates()
+        if cbr_data and cbr_data.get("rates"):
+            cbr_rates = cbr_data["rates"]
+            source = "cbr.ru"
+            fetched_at = str(cbr_data.get("date") or datetime.now().strftime("%Y-%m-%d %H:%M"))
+            target_entry = cbr_rates.get(target) or cbr_rates.get("USD")
+            val = round(float(target_entry["rate"]), 2) if target_entry else None
+
+            rates_pick = {}
+            for k in ("USD", "EUR", "KZT", "CNY"):
+                if k in cbr_rates and cbr_rates[k]["rate"] > 0:
+                    rates_pick[k] = round(1.0 / cbr_rates[k]["rate"], 6)
+
+            summary_parts = []
+            if val is not None:
+                summary_parts.append(f"Курс {name} ({target}): {val:.2f} ₽")
+            else:
+                summary_parts.append(f"Курс валют ({target}): данные получены")
+
+            other_items = []
+            for code, c_name in (("USD", "USD"), ("EUR", "EUR"), ("CNY", "CNY")):
+                if code != target and code in cbr_rates:
+                    other_items.append(f"{c_name}: {cbr_rates[code]['rate']:.2f} ₽")
+            if other_items:
+                summary_parts.append(f"({' | '.join(other_items)})")
+
+            summary = f"{' '.join(summary_parts)} (источник: {source}, {fetched_at})."
+
+            output_data = {
+                "rates": rates_pick,
+                "target": target,
+                "value": val,
+                "unit": "₽",
+                "currency": target,
+                "subject": f"курс {target}",
+                "source": source,
+                "fetched_at": fetched_at,
+                "summary": summary,
+            }
+            return ActionResult("public_data", {"kind": "currency"}, True, output_data)
+
+        # Резервный источник (open.er-api.com)
         rates = currency_rates("RUB")
         if not rates:
             return ActionResult("public_data", {"kind": "currency"}, False,
                                 error="курсы недоступны (сеть)")
         pick = {k: rates[k] for k in ("USD", "EUR", "KZT", "CNY") if k in rates}
-        return ActionResult("public_data", {"kind": "currency"}, True,
-                            {"rates": pick})
+        if not pick:
+            return ActionResult("public_data", {"kind": "currency"}, False,
+                                error="курсы валют не найдены")
+
+        val = None
+        if target in pick and pick[target]:
+            val = round(1.0 / pick[target], 2)
+        elif "USD" in pick and pick["USD"]:
+            target, name = "USD", "Доллар"
+            val = round(1.0 / pick["USD"], 2)
+
+        source = "open.er-api.com"
+        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        summary_parts = []
+        if val is not None:
+            summary_parts.append(f"Курс {name} ({target}): {val:.2f} ₽")
+        else:
+            summary_parts.append(f"Курс валют ({target}): данные получены")
+
+        other_items = []
+        for code, c_name in (("USD", "USD"), ("EUR", "EUR"), ("CNY", "CNY")):
+            if code != target and code in pick and pick[code]:
+                other_items.append(f"{c_name}: {round(1.0 / pick[code], 2):.2f} ₽")
+        if other_items:
+            summary_parts.append(f"({' | '.join(other_items)})")
+
+        summary = f"{' '.join(summary_parts)} (источник: {source}, {fetched_at})."
+
+        output_data = {
+            "rates": pick,
+            "target": target,
+            "value": val,
+            "unit": "₽",
+            "currency": target,
+            "subject": f"курс {target}",
+            "source": source,
+            "fetched_at": fetched_at,
+            "summary": summary,
+        }
+        return ActionResult("public_data", {"kind": "currency"}, True, output_data)
 
 
 DEFAULT_REGISTRY.register(PublicDataTool())

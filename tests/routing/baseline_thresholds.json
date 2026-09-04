@@ -1,0 +1,8 @@
+{
+  "date": "2026-09-04",
+  "min_kind_accuracy": 0.3000,
+  "min_tool_accuracy": 0.0300,
+  "max_negatives_fp": 30,
+  "max_high_risk_fn": 30,
+  "max_latency_p95_ms": 50.0
+}

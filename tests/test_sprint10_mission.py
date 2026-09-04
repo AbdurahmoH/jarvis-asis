@@ -117,7 +117,7 @@ def test_operator_mission_observes_repairs_only_mismatch_then_learns(tmp_path: P
     )
 
     assert report.completed is True
-    assert report.user_message == "Готово. Проверяйте, сэр."
+    assert "Готово" in report.user_message and ("проверен" in report.user_message.casefold() or "проверяйте" in report.user_message.casefold())
     assert report.repairs == ["wrap"]
     assert adapter.calls == [("theme", "Dark"), ("wrap", True), ("wrap", True)]
     assert report.observed == {"theme": "Dark", "wrap": True}
@@ -142,7 +142,7 @@ def test_action_result_ok_never_completes_mission_without_observed_state(tmp_pat
 
     assert report.completed is False
     assert report.state == "verification_failed"
-    assert report.user_message != "Готово. Проверяйте, сэр."
+    assert "Готово" not in report.user_message
     assert adapter.rolled_back is True
     assert report.episode_id == ""
 

@@ -42,37 +42,14 @@ log = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 #  §21 — Оценка риска
 # --------------------------------------------------------------------------- #
+#  2026-09-05: keyword-таблицы (_CRITICAL/_HIGH/_MEDIUM_RISK_PATTERNS) и
+#  _EXECUTABLE_RE УДАЛЕНЫ. Единственный источник риска по тексту цели и
+#  аргументам — core/routing/semantic_router.assess_risk (метаданные
+#  capability + эскалация по тексту и аргументам). Здесь остаётся только
+#  динамика паспорта инструмента (per-action уровни UI/browser) и сборка
+#  максимума. Правило без исключений: HIGH/CRITICAL → подтверждение всегда.
 
-#: CRITICAL is reserved for irreversible system/security modification.
-_CRITICAL_RISK_PATTERNS: List[tuple[str, str]] = [
-    (r"format\s+[a-z]:|форматир\w*\s+(диск|раздел)|bootloader|загрузчик", "необратимое изменение диска"),
-    (r"system32|удал\w*\s+системн\w*\s+файл|disable\w*\s+(uac|defender)", "критическое изменение системы"),
-]
-
-#: Признаки HIGH-risk намерения в тексте цели (рус + англ).
-_HIGH_RISK_PATTERNS: List[tuple[str, str]] = [
-    (r"удал|снес|сотри|очист|delete|remove|wipe|format|rmdir|rm\s+-rf", "удаление данных"),
-    (r"отправ|пошли|send\s+(mail|email|message)|напиши\s+письмо", "отправка сообщения"),
-    (r"оплат|плат|купи|покуп|payment|purchase|checkout|перевед[ия]\s+деньги", "финансовая операция"),
-    (r"парол|password|credential|секрет|api[\s_-]?key|токен доступа", "работа с секретами"),
-    (r"реестр|registry|regedit|hkey_", "изменение реестра"),
-    (r"брандмауэр|firewall|антивирус|antivirus|defender|uac|политик безопасн", "настройки безопасности"),
-    (r"форматир|раздел диска|partition|bootloader|загрузчик", "деструктивная операция с диском"),
-    (r"выключи компьютер|перезагруз|shutdown|reboot", "управление питанием"),
-]
-
-#: Признаки MEDIUM-risk.
-_MEDIUM_RISK_PATTERNS: List[tuple[str, str]] = [
-    (r"запиши|сохран|создай файл|перезапиш|write|save|создай документ", "запись на диск"),
-    (r"установ|install|pip\s+install|npm\s+i", "установка ПО"),
-    (r"закрой|заверши процесс|kill|terminate", "завершение процессов"),
-    (r"скачай|download|загрузи файл", "загрузка файла из сети"),
-]
-
-#: Расширения исполняемых файлов — неизвестный exe всегда HIGH (§21).
-_EXECUTABLE_RE = re.compile(
-    r"\.(exe|msi|bat|cmd|ps1|vbs|scr|com|jar|sh)\b", re.IGNORECASE
-)
+_LEVEL_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
 @dataclass
@@ -110,10 +87,11 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
     """Оценивает риск по цели, инструменту и аргументам (§21).
 
     Итоговый уровень — МАКСИМУМ из:
-        * риска паспорта инструмента (Capability.risk_level);
-        * риска, распознанного в тексте цели;
-        * риска, распознанного в аргументах (пути, exe, флаги).
+        * оценки по тексту цели и аргументам из semantic_router (источник);
+        * риска паспорта инструмента с per-action динамикой (ниже).
     """
+    from core.routing.semantic_router import assess_risk as routing_assess_risk
+
     reasons: List[str] = []
     level = RiskLevel.LOW
 
@@ -126,7 +104,12 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
         if why and why not in reasons:
             reasons.append(why)
 
-    # 1) Паспорт инструмента.  UI/browser capabilities publish their maximum
+    # 1) Единый источник: текст цели + аргументы (semantic_router).
+    text_level, _ = routing_assess_risk(None, arguments, goal)
+    if _LEVEL_ORDER.get(text_level, 0) > 0:
+        bump(RiskLevel(text_level), "риск цели/аргументов по семантической оценке")
+
+    # 2) Паспорт инструмента.  UI/browser capabilities publish their maximum
     # risk in the registry, but Risk Gate evaluates the concrete action.  Safe
     # observation/navigation must not require the same grant as a blind click.
     if tool:
@@ -148,43 +131,6 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
             bump(dynamic_level, f"действие '{tool}:{action or 'default'}' имеет risk={dynamic_level.value}")
         else:
             bump(RiskLevel.MEDIUM, f"инструмент '{tool}' без паспорта возможностей")
-
-    # 2) Текст цели.
-    text = (goal or "").lower()
-    for pattern, why in _CRITICAL_RISK_PATTERNS:
-        if re.search(pattern, text):
-            bump(RiskLevel.CRITICAL, why)
-    for pattern, why in _HIGH_RISK_PATTERNS:
-        if re.search(pattern, text):
-            bump(RiskLevel.HIGH, why)
-    for pattern, why in _MEDIUM_RISK_PATTERNS:
-        if re.search(pattern, text):
-            bump(RiskLevel.MEDIUM, why)
-
-    # 3) Аргументы.
-    raw_arg_values = [str(v) for v in (arguments or {}).values()]
-    arg_text = " ".join(raw_arg_values).lower()
-    if arg_text:
-        for pattern, why in _CRITICAL_RISK_PATTERNS:
-            if re.search(pattern, arg_text):
-                bump(RiskLevel.CRITICAL, f"{why} (в аргументах)")
-        for pattern, why in _HIGH_RISK_PATTERNS:
-            if re.search(pattern, arg_text):
-                bump(RiskLevel.HIGH, f"{why} (в аргументах)")
-        # A hostname such as ``example.com`` is navigation, not a DOS
-        # ``.com`` executable.  Executable classification applies only to
-        # non-HTTP argument values; download risk is assessed by the concrete
-        # browser action rather than by a domain suffix.
-        executable_arg_text = " ".join(
-            value for value in raw_arg_values
-            if not value.strip().casefold().startswith(("http://", "https://"))
-        ).lower()
-        if _EXECUTABLE_RE.search(executable_arg_text):
-            # Известные системные приложения не считаем неизвестным exe.
-            known = ("notepad", "calc", "explorer", "cmd", "powershell", "taskmgr",
-                     "chrome", "firefox", "msedge", "winword", "excel", "vlc", "telegram")
-            if not any(k in arg_text for k in known):
-                bump(RiskLevel.HIGH, "запуск неизвестного исполняемого файла")
 
     return RiskAssessment(level=level, reasons=reasons, tool=tool)
 

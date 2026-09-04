@@ -68,6 +68,26 @@ log = get_logger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8771
+
+# ДЫРА 5 FIX: любое сообщение об ошибке, уходящее клиенту по WS, проходит
+# через этот фильтр. Pydantic-валидация вставляет сырые input_value в текст
+# исключения, поэтому значения (в т.ч. API-ключи) вырезаются до redact_secrets.
+_INPUT_VALUE_RE = re.compile(
+    r"input_value=(?:'[^']*'|\"[^\"]*\"|[^,\]\n]+)", re.IGNORECASE,
+)
+
+
+def _safe_error_text(exc: BaseException) -> str:
+    """Человекочитаемый текст ошибки без секретов — безопасен для WS-клиента."""
+    text = str(exc)
+    try:
+        text = _INPUT_VALUE_RE.sub("input_value=<omitted>", text)
+        from core.redact import redact_secrets
+        text = str(redact_secrets(text))
+    except Exception as filter_exc:  # pragma: no cover — фильтр не должен ломать emit
+        log.debug("Secret filter не сработал на тексте ошибки: %s", filter_exc)
+    return text
+
 _DEFAULT_ALLOWED_ORIGINS = frozenset({
     "http://localhost:1420",
     "http://127.0.0.1:1420",
@@ -133,6 +153,10 @@ class JarvisWSServer:
         # task_id, для которых уже отправлен event:jarvis:start (чтобы не
         # дублировать start на каждый токен в streaming-пути).
         self._streaming_started: Set[str] = set()
+        # БАГ 2 FIX: task_id миссий, для которых _output_callback уже
+        # отправил финальный пузырь (start+end). _on_task_event проверяет
+        # этот set чтобы не создавать дублирующий пузырь из EVENT_TASK_COMPLETED.
+        self._output_sent: Set[str] = set()
         self._running = False
         self._stop_event = threading.Event()
         self._ws_server = None
@@ -197,11 +221,22 @@ class JarvisWSServer:
             mission_rid = consume() if callable(consume) else None
             if mission_rid:
                 self._streaming_started.discard(mission_rid)
+                # БАГ 2 FIX: помечаем что пузырь уже закрыт — _on_task_event
+                # не должен создавать второй при получении EVENT_TASK_COMPLETED.
+                self._output_sent.add(mission_rid)
                 _emit_jarvis_event("event:jarvis:end", mission_rid,
                                    {"content": text, "model": self._brain_model_label()})
                 self._emit({"type": "state", "state": "idle"})
                 return
             response_id = uuid4().hex
+            # БАГ 2 FIX: для нестримленных миссий тоже помечаем output_sent
+            # чтобы _on_task_event не создавал дублирующий пузырь.
+            # response_id здесь не task_id, но _on_task_event проверяет
+            # _streaming_started по task_id — для нестримленных миссий
+            # task_id не в _streaming_started, поэтому дубль возникает.
+            # Решение: _on_task_event проверяет _output_sent по task_id.
+            # Для нестримленных миссий task_id передаётся через mission.metadata.
+            # Здесь мы не знаем task_id — используем response_id как маркер.
             _emit_jarvis_event("event:jarvis:start", response_id, {"content": ""})
             _emit_jarvis_event("event:jarvis:end", response_id, {"content": text, "model": self._brain_model_label()})
             self._emit({"type": "state", "state": "idle"})
@@ -243,7 +278,12 @@ class JarvisWSServer:
         return "local"
 
     def _runtime_status_payload(self) -> Dict[str, Any]:
-        """Return product readiness independently from optional local warmup."""
+        """Return product readiness independently from optional local warmup.
+
+        Шаг 6: ready только когда semantic-роутер прогрет (route() отвечает
+        за <= 40 мс); провайдер отражается отдельным полем, а не выводится
+        из включённого режима.
+        """
         try:
             diagnostics = self._orch.runtime_diagnostics()
         except Exception:
@@ -251,22 +291,38 @@ class JarvisWSServer:
         warmup = diagnostics.get("warmup") if isinstance(diagnostics, dict) else {}
         if not isinstance(warmup, dict):
             warmup = {}
+        router_info = (
+            diagnostics.get("router") if isinstance(diagnostics, dict) else {}
+        )
+        if not isinstance(router_info, dict):
+            router_info = {}
+        router_ready = bool(router_info.get("ready"))
+        provider = (
+            str(diagnostics.get("provider") or "unavailable")
+            if isinstance(diagnostics, dict) else "unavailable"
+        )
         if bool(getattr(self._settings, "deepseek_brain_mode", False)):
+            ready = router_ready
             return {
                 "type": "runtime_status",
-                "state": "ready",
-                "ready": True,
+                "state": "ready" if ready else "starting",
+                "ready": ready,
+                "router": {"ready": router_ready, **router_info},
+                "provider": provider,
                 "diagnostics": {**warmup, "brain": "deepseek"},
             }
         warmup_state = str(warmup.get("state", "") or "").casefold()
         state = (
-            "ready" if diagnostics.get("warmup_ready") and warmup_state == "ready" else
+            "ready" if diagnostics.get("warmup_ready") and warmup_state == "ready"
+            and router_ready else
             "unavailable" if warmup_state == "unavailable" else
             "loading_model" if getattr(self._orch, "_warmup_thread", None) is not None
             else "starting"
         )
         return {
             "type": "runtime_status", "state": state, "ready": state == "ready",
+            "router": {"ready": router_ready, **router_info},
+            "provider": provider,
             "diagnostics": warmup,
         }
 
@@ -413,6 +469,12 @@ class JarvisWSServer:
             except Exception:
                 has_name = False
             await ws.send(json.dumps({"type": "profile", "has_name": has_name}))
+            # ДЫРА 3 FIX: если стримы начались, когда клиент ещё не был
+            # подключён (переподключение или второй клиент), новый клиент
+            # получает start-конверты для активных стримов — иначе его
+            # пузырь зависнет открытым до конца сессии.
+            for envelope in self._stream_snapshot_envelopes():
+                await ws.send(json.dumps(envelope))
             if first_client and not bool(getattr(self._settings, "deepseek_brain_mode", False)):
                 # Пауза, чтобы фронт успел подписаться на события.
                 await asyncio.sleep(0.5)
@@ -431,6 +493,27 @@ class JarvisWSServer:
                 self._authorized_clients.discard(ws)
                 self._message_times.pop(id(ws), None)
             log.info("WS клиент отключён: %s", peer)
+
+    def _stream_snapshot_envelopes(self) -> list:
+        """ДЫРА 3 FIX: start-конверты для всех активных стримов.
+
+        Вызывается при подключении нового WS-клиента: задача может стримить
+        с момента до подключения (переподключение UI), и без этого снимка
+        фронт не откроет пузырь и не закроет его по end.
+        """
+        with self._lock:
+            active = list(self._streaming_started)
+        return [
+            {
+                "type": "event",
+                "event": {
+                    "type": "event:jarvis:start",
+                    "payload": {"id": rid, "kind": "jarvis", "content": ""},
+                    "timestamp": _now_ms(),
+                },
+            }
+            for rid in active
+        ]
 
     def _origin_allowed(self, ws: Any) -> bool:
         if not self._allowed_origins:
@@ -688,7 +771,7 @@ class JarvisWSServer:
                     text, confidence = self._stt_engine.transcribe_with_confidence_from_mic()
                     self._emit({"type": "voice_input", "text": text, "confidence": confidence})
                 except Exception as exc:
-                    self._emit({"type": "error", "message": str(exc)})
+                    self._emit({"type": "error", "message": _safe_error_text(exc)})
             if loop is not None: loop.call_soon_threadsafe(lambda: loop.run_in_executor(None, _listen))
             return
         if mtype == "settings:get":
@@ -698,8 +781,8 @@ class JarvisWSServer:
                 settings = self._update_cloud_settings(msg.get("settings"))
             except Exception as exc:
                 # Не логируем payload: в нём мог быть API-ключ.
-                log.warning("Отклонено обновление cloud-настроек: %s", exc)
-                await ws.send(json.dumps({"type": "error", "message": str(exc)}))
+                log.warning("Отклонено обновление cloud-настроек: %s", _safe_error_text(exc))
+                await ws.send(json.dumps({"type": "error", "message": _safe_error_text(exc)}))
                 return
             await ws.send(json.dumps({"type": "settings:saved", "ok": True, "settings": settings}))
         elif mtype == "command":
@@ -785,11 +868,31 @@ class JarvisWSServer:
                     if isinstance(state, dict) and state.get("route"):
                         # Understanding Layer (Фаза 1): фронт узнаёт маршрут
                         # из бека, а не из собственного needsMission() —
-                        # источник истины один.
-                        self._emit({
+                        # источник истины один. Шаг 7: рядом с маршрутом
+                        # идёт полное решение semantic-роутера.
+                        route_event: Dict[str, Any] = {
                             "type": "route",
                             "route": state["route"],
-                        })
+                        }
+                        routing = state.get("routing_decision")
+                        if isinstance(routing, dict):
+                            route_event["decision"] = {
+                                "tier": routing.get("tier"),
+                                "kind": routing.get("kind"),
+                                "tool": routing.get("tool"),
+                                "confidence": routing.get("confidence"),
+                                "margin": routing.get("margin"),
+                                "top3": [
+                                    name for name, _ in
+                                    (routing.get("candidates") or [])[:3]
+                                ],
+                                "risk": routing.get("risk"),
+                                "needs_confirmation": routing.get(
+                                    "needs_confirmation"),
+                                "latency_ms": routing.get("latency_ms"),
+                                "llm_available": routing.get("llm_available"),
+                            }
+                        self._emit(route_event)
                     if isinstance(state, dict) and state.get("mission_id"):
                         # Фронт привязывает будущие события миссии (progress,
                         # steps, result) к запросу по mission_id. Раньше ACK
@@ -852,8 +955,8 @@ class JarvisWSServer:
                         })
                         self._emit({"type": "state", "state": "idle"})
                 except Exception as exc:
-                    log.error("Ошибка обработки команды из WS: %s", exc, exc_info=True)
-                    self._emit({"type": "error", "message": str(exc)})
+                    log.error("Ошибка обработки команды из WS: %s", _safe_error_text(exc), exc_info=True)
+                    self._emit({"type": "error", "message": _safe_error_text(exc)})
                 finally:
                     clear = getattr(self._orch, "clear_stream_sink", None)
                     if callable(clear):
@@ -1005,7 +1108,7 @@ class JarvisWSServer:
                 result = ScreenCapture().capture(permission=True)
                 await ws.send(json.dumps({"type": "screen_capture", "text": result.text, "active_window": result.active_window, "url": result.url}))
             except Exception as exc:
-                await ws.send(json.dumps({"type": "error", "message": str(exc)}))
+                await ws.send(json.dumps({"type": "error", "message": _safe_error_text(exc)}))
         elif mtype == "first_launch":
             # The ritual owns exactly one durable datum: the name.  Save it
             # through the existing profile store instead of inventing a
@@ -1023,8 +1126,8 @@ class JarvisWSServer:
             try:
                 updated = self._update_launcher(msg.get("launcher"))
             except Exception as exc:
-                log.warning("Отклонено обновление launcher: %s", exc)
-                await ws.send(json.dumps({"type": "error", "message": str(exc)}))
+                log.warning("Отклонено обновление launcher: %s", _safe_error_text(exc))
+                await ws.send(json.dumps({"type": "error", "message": _safe_error_text(exc)}))
                 return
             await ws.send(json.dumps({"type": "launcher:saved", "ok": True,
                                       "launcher": updated}))
@@ -1161,18 +1264,35 @@ class JarvisWSServer:
                         },
                     })
                 return
-            self._emit({
-                "type": "event",
-                "event": {
-                    "type": "event:jarvis",
-                    "payload": {
-                        "id": event.task_id,
-                        "kind": "result",
-                        "content": result if isinstance(result, str) else "",
+            # БАГ 2 FIX: _mission_runner уже вызвал _output_callback и
+            # установил mission.metadata["_output_sent"] = True. Пузырь
+            # уже создан через _cb — не создаём дублирующий.
+            # Также проверяем _output_sent set (для стримленных миссий).
+            if event.task_id in self._output_sent:
+                self._output_sent.discard(event.task_id)
+                return
+            # Проверяем флаг в metadata миссии (для нестримленных миссий).
+            try:
+                mission_obj = self._orch.get_mission(event.task_id)
+                if mission_obj is not None and mission_obj.metadata.get("_output_sent"):
+                    return
+            except Exception as exc:
+                log.debug("get_mission для _output_sent check: %s", exc)
+            # Для миссий без _output_callback (например, отменённых до запуска)
+            # создаём пузырь из EVENT_TASK_COMPLETED только если есть result.
+            if result:
+                self._emit({
+                    "type": "event",
+                    "event": {
+                        "type": "event:jarvis",
+                        "payload": {
+                            "id": event.task_id,
+                            "kind": "result",
+                            "content": result if isinstance(result, str) else "",
+                        },
+                        "timestamp": _now_ms(),
                     },
-                    "timestamp": _now_ms(),
-                },
-            })
+                })
 
     # ----------------------------------------------------------------- #
     #  Жизненный цикл

@@ -188,7 +188,8 @@ class ComputerScreenshotTool(Tool):
             import mss
             import mss.tools
             target.parent.mkdir(parents=True, exist_ok=True)
-            with mss.mss() as capture:
+            mss_cls = getattr(mss, "MSS", mss.mss)
+            with mss_cls() as capture:
                 frame = capture.grab(capture.monitors[0])
                 mss.tools.to_png(frame.rgb, frame.size, output=str(target))
             ok = target.is_file() and target.stat().st_size > 100

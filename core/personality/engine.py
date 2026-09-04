@@ -95,7 +95,8 @@ class PersonalityEngine:
         if not generic:
             return value
         if verified:
-            return f"Готово, {self.profile.address}. Проверил результат — всё применилось."
+            addr = self.profile.address or "сэр"
+            return f"Готово, {addr}. Проверил результат — всё применилось."
         return "Результат пока не подтверждён проверкой."
 
     @staticmethod

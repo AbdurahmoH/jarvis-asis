@@ -190,6 +190,12 @@ class ToolExecutor:
 def _executor_for(context: ToolContext) -> ToolExecutor:
     limits = getattr(getattr(context, "settings", None), "limits", None)
     capacity = int(getattr(limits, "max_parallel_tools", 0) or 0)
+    # БАГ 9/17 FIX: агент владеет ОДНИМ executor'ом на процесс и передаёт
+    # его через extra. Если владелец не вложил — fallback на кэш в extra
+    # (по одному executor'у на контекст, семафор не разделяется).
+    injected = context.extra.get("tool_executor") if isinstance(context.extra, dict) else None
+    if isinstance(injected, ToolExecutor):
+        return injected
     current = context.extra.get("_tool_executor") if isinstance(context.extra, dict) else None
     if not isinstance(current, ToolExecutor) or current.capacity != max(0, capacity):
         current = ToolExecutor(capacity)

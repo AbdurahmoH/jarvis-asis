@@ -43,7 +43,7 @@ import uuid
 from config.settings import Settings
 from core.actions import DEFAULT_REGISTRY
 from core.actions.base import ActionResult, ToolContext
-from core.actions.executor import execute_tool
+from core.actions.executor import ToolExecutor, execute_tool
 from core.capabilities import CAPABILITIES, Capability, describe_tools_for_model
 from core.ingest import ingest_text
 from core.memory.knowledge_graph import GraphMemoryStore
@@ -61,11 +61,17 @@ from core.memory.facts import detect_tone, learn_facts
 from core.memory.profile import get_relevant_profile_context
 from core.memory.relationship import MemoryHierarchy, PreferenceLearner, RelationshipMemoryStore
 from core.memory.short_term import SessionManager
-from core.model_router import ModelRouter, RoutingDecision, classify_conversation
+from core.model_router import ModelRouter, RoutingDecision
 from core.personality import PersonalityEngine
 from core.repair import RepairLoop
-from core.research import ResearchEngine, is_research_goal
-from core.router.intent_router import resolve_keyword_tool, split_compound_commands
+from core.research import ResearchEngine
+from core.routing.semantic_router import (
+    RoutingContext as SemanticRoutingContext,
+    RoutingDecision as SemanticRoutingDecision,
+    intent_category as semantic_intent_category,
+    route as semantic_route,
+)
+from core.router.intent_router import split_compound_commands
 from core.router.route_guard import validate_tool_selection
 from core.safety import RiskAssessment, assess_risk
 from core.redact import redact_args
@@ -94,7 +100,15 @@ from core.verifier import VerificationResult, verify_action_result
 from core.executive import ExecutiveMind
 from core.intelligence import ResearchPending, SkillCatalog, TeachingSession, TutorEngine, UniversalIntake
 
-__all__ = ["Agent", "AgentConfig", "AgentOutcome", "ACK_PHRASES", "pick_acknowledgement"]
+__all__ = [
+    "Agent",
+    "AgentConfig",
+    "AgentOutcome",
+    "ACK_PHRASES",
+    "pick_acknowledgement",
+    "render_structured_fact",
+    "verify_atomic_values_preserved",
+]
 
 log = get_logger(__name__)
 
@@ -138,6 +152,113 @@ def _hide_reasoning_stream(cumulative: str) -> str:
         idx = out.lower().rfind("<think>")
         out = out[:idx]
     return out
+
+
+def render_structured_fact(data: Any) -> str:
+    """Детерминированное представление структурированного факта без вызова LLM."""
+    if isinstance(data, str):
+        return data.strip()
+    if not isinstance(data, Mapping):
+        return str(data) if data is not None else ""
+
+    if data.get("summary"):
+        return str(data["summary"]).strip()
+    if data.get("text"):
+        return str(data["text"]).strip()
+
+    # Currency
+    if "rates" in data or "currency" in data or "target" in data:
+        curr = data.get("currency") or data.get("target") or "USD"
+        val = data.get("value")
+        unit = data.get("unit", "₽")
+        src = data.get("source", "open.er-api.com")
+        at = data.get("fetched_at")
+        at_part = f", {at}" if at else ""
+        if val is not None:
+            return f"Курс {curr}: {val} {unit} (источник: {src}{at_part})."
+        return f"Курсы валют получены (источник: {src}{at_part})."
+
+    # Weather
+    if "current" in data or data.get("unit") == "°C" or "location" in data:
+        val = data.get("value")
+        unit = data.get("unit", "°C")
+        loc = data.get("location")
+        loc_name = loc.get("name") if isinstance(loc, Mapping) else "городе"
+        cur = data.get("current")
+        cond = f", {cur.get('weather')}" if isinstance(cur, Mapping) and cur.get("weather") else ""
+        src = data.get("source", "open-meteo.com")
+        if val is not None:
+            return f"Погода в {loc_name}: сейчас {val}{unit}{cond} (источник: {src})."
+
+    if data.get("value") is not None:
+        subj = data.get("subject", "Данные")
+        unit = f" {data['unit']}" if data.get("unit") else ""
+        return f"{subj}: {data['value']}{unit}."
+
+    return str(dict(data))
+
+
+def verify_atomic_values_preserved(text: str, evidence: Any) -> bool:
+    """Детерминированная проверка сохранения атомарных значений факта в тексте финализатора."""
+    if not text or not isinstance(text, str):
+        return False
+    if not isinstance(evidence, Mapping):
+        return True
+
+    text_lower = text.casefold()
+
+    # 1. Проверка числового значения (с допуском форматирования, e.g. 80.0, 80,0, 80)
+    if "value" in evidence and evidence["value"] is not None:
+        try:
+            target_val = float(evidence["value"])
+            raw_nums = re.findall(r"(?:\b|\b[-+])\d+(?:[.,]\d+)?\b", text)
+            found_num = False
+            for rn in raw_nums:
+                try:
+                    num_f = float(rn.replace(",", "."))
+                    if abs(num_f - target_val) < 0.05:
+                        found_num = True
+                        break
+                except ValueError:
+                    continue
+            if not found_num and target_val.is_integer():
+                int_str = str(int(target_val))
+                if re.search(rf"\b{int_str}\b", text):
+                    found_num = True
+            if not found_num:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Проверка валюты (код или наименование)
+    currency = evidence.get("currency") or evidence.get("target")
+    if currency:
+        curr_lower = str(currency).casefold()
+        curr_aliases = [curr_lower]
+        if curr_lower == "usd":
+            curr_aliases.extend(["доллар", "$"])
+        elif curr_lower == "eur":
+            curr_aliases.extend(["евро", "€"])
+        elif curr_lower == "cny":
+            curr_aliases.extend(["юан", "¥"])
+        elif curr_lower == "kzt":
+            curr_aliases.extend(["тенге", "₸"])
+        if not any(alias in text_lower for alias in curr_aliases):
+            return False
+
+    # 3. Проверка единицы измерения (символ или словесное обозначение)
+    unit = evidence.get("unit")
+    if unit:
+        unit_lower = str(unit).casefold()
+        unit_aliases = [unit_lower]
+        if unit_lower == "₽":
+            unit_aliases.extend(["руб", "rub", "р."])
+        elif unit_lower in ("°c", "°"):
+            unit_aliases.extend(["°c", "°", "град", "c"])
+        if not any(alias in text_lower for alias in unit_aliases):
+            return False
+
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -328,6 +449,15 @@ class Agent:
         self._council = council
         self._brain_fabric = brain_fabric
         self._registry = DEFAULT_REGISTRY
+        # БАГ 9/17 FIX: один ToolExecutor на процесс. capacity берётся из
+        # settings.limits.max_parallel_tools (дефолт 4 > 0). Раньше executor
+        # кэшировался в context.extra, а ToolContext создавался на каждый
+        # вызов — семафор параллелизма никогда не был общим (мёртвый).
+        self._tool_executor = ToolExecutor(
+            max_parallel=int(
+                getattr(getattr(settings, "limits", None), "max_parallel_tools", 4) or 0
+            )
+        )
         self._task_runtime = None
         self._authority = None
         # Executive Mind owns goals/commitments/world state, while this Agent
@@ -582,16 +712,15 @@ class Agent:
         except (TypeError, ValueError):
             return None
 
-    def run_mission(self, mission: Mission, cancel: threading.Event) -> str:
+    def run_mission(self, mission: Mission, cancel: threading.Event,
+                    decision: Optional[SemanticRoutingDecision] = None) -> str:
         """Исполняет миссию целиком. Возвращает финальный текст ответа.
 
         Вызывается ``TaskRuntime`` в отдельном потоке. Никаких ограничений
         на длительность (§4) — только реальная отмена через ``cancel``.
 
-        Sprint 1 STEP 2: кумулятивный текст реального SSE-потока транслируется
-        в события миссии (EVENT_STREAM_CHUNK, correlation = task_id), а
-        финальный _output_callback того же потока закрывает стримленный
-        пузырь (см. consume_streamed_mission).
+        ``decision`` — готовое решение semantic_route из submit_goal; если
+        не передано, execute() построит его сам (та же единая точка).
         """
         tls = self._stream_tls
         tls.streamed_rid = None
@@ -606,7 +735,7 @@ class Agent:
 
         self.install_stream_sink(_mission_sink)
         try:
-            outcome = self.execute(mission.goal, mission=mission, cancel=cancel)
+            outcome = self.execute(mission.goal, mission=mission, cancel=cancel, decision=decision)
         finally:
             self.clear_stream_sink()
         mission.verification = outcome.verification.to_dict() if outcome.verification else None
@@ -629,8 +758,14 @@ class Agent:
         return rid
 
     def execute(self, goal: str, mission: Optional[Mission] = None,
-                cancel: Optional[threading.Event] = None) -> AgentOutcome:
-        """Главный цикл: intent -> risk -> mode -> plan -> execute -> verify -> repair.
+                cancel: Optional[threading.Event] = None,
+                decision: Optional[SemanticRoutingDecision] = None) -> AgentOutcome:
+        """Главный цикл: route -> risk -> mode -> plan -> execute -> verify -> repair.
+
+        Единая точка решения (2026-09-05): ``decision`` из
+        core/routing/semantic_router.route(). Если оркестратор не передал
+        решение (worker миссии, прямые вызовы), роутер вызывается здесь —
+        тот же источник, без keyword-гейтов.
 
         Цикл сокращается автоматически (§3): тривиальный разговор и простые
         команды не проходят через планирование.
@@ -646,11 +781,21 @@ class Agent:
         # (B1): сбрасывается в точке входа, применяется в _execute_verified,
         # разделяется всеми частями составной команды.
         self._action_calls_left = int(getattr(self._config, "max_action_iterations", 6) or 6)
+        # Единая точка решения: если оркестратор не передал decision —
+        # роутим здесь (тот же semantic_route, clarify вне сессии запрещён).
+        if decision is None and goal:
+            decision = semantic_route(
+                goal,
+                SemanticRoutingContext(
+                    llm_available=self._llm_available_cached(),
+                    allow_clarify=False,
+                ),
+            )
         executive_contract = None
         if goal:
             try:
                 executive_contract = self._executive.begin_turn(
-                    goal, intent=resolve_keyword_tool(goal, goal), source="user",
+                    goal, intent=semantic_intent_category(decision), source="user",
                 )
             except Exception as exc:
                 log.debug("Executive turn intake skipped: %s", exc)
@@ -663,7 +808,7 @@ class Agent:
             except Exception as exc:  # noqa: BLE001 — память не ломает миссию
                 log.debug("Извлечение фактов не удалось: %s", exc)
 
-        outcome = self._execute_core(goal, mission, cancel)
+        outcome = self._execute_core(goal, mission, cancel, decision=decision)
         if not self.deepseek_brain_mode:
             try:
                 task_type = self._personality.infer_task_type(goal, mode=outcome.mode)
@@ -735,7 +880,8 @@ class Agent:
             log.debug("Запись в session memory не удалась: %s", exc)
 
     def _execute_core(self, goal: str, mission: Optional[Mission] = None,
-                      cancel: Optional[threading.Event] = None) -> AgentOutcome:
+                      cancel: Optional[threading.Event] = None,
+                      decision: Optional[SemanticRoutingDecision] = None) -> AgentOutcome:
         cancel = cancel or threading.Event()
         goal = (goal or "").strip()
         if not goal:
@@ -743,9 +889,16 @@ class Agent:
 
         trace: List[str] = []
 
-        # ---- 1. INTENT (мгновенно, офлайн) ----
-        intent = resolve_keyword_tool(goal, goal)
-        trace.append(f"intent={intent}")
+        # ---- 1. ROUTING (единая точка решения, 2026-09-05) ----
+        # decision построен semantic_route(): kind/tool/confidence/risk.
+        # Никаких keyword-классификаторов здесь больше нет — все ветки
+        # ниже читают decision и не переклассифицируют текст.
+        intent = semantic_intent_category(decision)
+        trace.append(
+            f"routing: kind={decision.kind} tool={decision.tool} "
+            f"tier={decision.tier} conf={decision.confidence:.2f} "
+            f"risk={decision.risk} confirm={decision.needs_confirmation}"
+        )
         try:
             contract = self._intake.classify(goal)
             trace.append(f"task_contract={contract.intent_family}/{contract.mode}")
@@ -758,28 +911,39 @@ class Agent:
                 intent, goal=goal, settings=self._settings, allow_model=False,
             )
             mission.metadata["intent"] = intent
+            mission.metadata["routing_decision"] = decision.to_dict()
             mission.set_status(MissionStatus.ANALYZING, "определение намерения и риска")
             mission.set_progress(0.1, "анализ намерения")
 
-        # ---- 2. RISK (§21) ----
+        # ---- 2. RISK (§21): адаптер над semantic_router.assess_risk ----
         risk = assess_risk(goal)
         trace.append(f"risk={risk.level.value}")
         self._mark_latency("route_complete")
-        perception = self._try_world_perception(goal, mission, cancel, risk, trace)
-        if perception is not None:
-            return perception
-        fresh = self._try_fresh_information(goal, mission, cancel, risk, trace)
+
+        # ---- 2a. UNSUPPORTED (шаг 5): честный отказ без подмены ----
+        if decision.kind == "action" and decision.tool is None:
+            return self._handle_unsupported(decision, goal, mission, trace)
+
+        # ---- 2b. CLARIFY из прямого вызова agent.execute ----
+        if decision.kind == "clarify" and decision.clarify_question:
+            trace.append("routing -> clarify")
+            return AgentOutcome(
+                text=decision.clarify_question,
+                verified=False,
+                tool_used=None,
+                risk=risk,
+                mode="clarification",
+                trace=trace,
+            )
+
+        # ---- 2c. PERCEPTION: только для вопросов о текущем состоянии ----
+        if decision.kind == "question":
+            perception = self._try_world_perception(goal, mission, cancel, risk, trace)
+            if perception is not None:
+                return perception
+        fresh = self._try_fresh_information(goal, mission, cancel, risk, trace, decision)
         if fresh is not None:
             return fresh
-        safe_conversation, safe_conversation_reason = classify_conversation(goal, intent)
-        if safe_conversation:
-            routing = self._model_router.route(goal, context_tokens=0)
-            memory_ctx = self._retrieve_context(goal)
-            self._mark_latency("context_complete")
-            trace.append(f"conversation safety gate: {safe_conversation_reason}")
-            return self._answer_conversation(
-                goal, mission, cancel, trace, routing, memory_ctx,
-            )
         try:
             executive_plan = self._executive.compile(
                 goal, intent=intent, risk=risk.level.value,
@@ -818,12 +982,9 @@ class Agent:
         if cancel.is_set():
             return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
 
-        # Explicit unknown-capability wording is not small talk.  Route it to
-        # the resumable research path before the conversation gate can turn it
-        # into a vague model reply.
-        if intent == "none" and any(marker in goal.casefold() for marker in (
-            "неизвестная команда", "неизвестную команду", "capability research",
-        )):
+        # Неизвестная capability формулировками пользователя уходит в
+        # research-путь раньше conversation gate (осознанный перенос гейта).
+        if "неизвестная команда" in goal.casefold() or "неизвестную команду" in goal.casefold():
             trace.append("unknown capability marker -> research")
             return self._handle_unknown(goal, [], mission, trace, reason="нет зарегистрированной способности")
 
@@ -847,7 +1008,7 @@ class Agent:
         # budget and prevents cold memory setup from polluting tool latency.
         self._mark_latency("context_complete")
         fast = self._try_fast_path(
-            goal, intent, mission, cancel, risk,
+            goal, decision, mission, cancel, risk,
         )
         if fast is not None:
             fast.trace = trace + fast.trace
@@ -859,25 +1020,21 @@ class Agent:
         if memory_ctx and mission is not None:
             mission.metadata["memory_context"] = memory_ctx[:600]
 
-        # ---- 6. CONVERSATION GATE (Sprint 2): разговор без действия ----
+        # ---- 6. CONVERSATION GATE (по decision) ----
         # Офлайн-роутер уверенно распознал разговор: модель НЕ получает список
-        # инструментов и НЕ генерирует JSON-план — слабая fast-модель физически
-        # не может «позвать» list_files. Настоящие действия идут мимо гейта
-        # (явные глаголы/интент файлов/приложений/системы) в planner ниже.
-        is_conversation, conv_reason = classify_conversation(goal, intent)
-        if is_conversation:
-            trace.append(f"conversation gate: {conv_reason}")
+        # инструментов и НЕ генерирует JSON-план. Настоящие действия идут мимо
+        # гейта в planner ниже. (2026-09-05: classify_conversation удалён —
+        # гейт читает decision.kind.)
+        if decision.kind == "chat":
+            trace.append("conversation gate: routing kind=chat")
             if mission is not None:
-                mission.metadata["conversation_gate"] = conv_reason
+                mission.metadata["conversation_gate"] = "routing kind=chat"
             return self._answer_conversation(
                 goal, mission, cancel, trace, routing, memory_ctx,
             )
 
         # ---- 7. RESEARCH MODE (§18): явное исследование ----
-        # Conversation is checked first: "почему..." and "что такое..."
-        # are answered directly, while explicit "найди/поищи" still enters
-        # the resumable research pipeline.
-        if is_research_goal(goal) and not self.deepseek_brain_mode:
+        if decision.tool == "web_search" and not self.deepseek_brain_mode:
             trace.append("режим: research workflow")
             return self._handle_research(goal, mission, cancel, trace)
 
@@ -894,7 +1051,7 @@ class Agent:
                 goal=goal,
                 routing=routing,
                 memory_ctx=memory_ctx,
-                action_expected=not is_conversation,
+                action_expected=decision.kind != "chat",
             )
             if discovery is None:
                 return self._handle_model_unavailable(
@@ -1044,9 +1201,8 @@ class Agent:
                 mission.note_error(route_guard.reason)
                 mission.metadata["route_guard"] = route_guard.to_dict()
             if self.deepseek_brain_mode:
-                ambiguous_conversation, ambiguous_reason = classify_conversation(goal, intent)
-                if ambiguous_conversation:
-                    trace.append(f"route guard -> conversation recovery ({ambiguous_reason})")
+                if decision.kind == "chat":
+                    trace.append("route guard -> conversation recovery (routing kind=chat)")
                     return self._answer_conversation(
                         goal, mission, cancel, trace, routing, memory_ctx,
                     )
@@ -1226,7 +1382,16 @@ class Agent:
             if (self._brain_fabric is not None and routing is not None
                     and getattr(routing, "brain_route", None) is not None):
                 from core.brain import BrainFabricBackend, BrainRequest, BrainRole, PrivacyClass
-                role = BrainRole(routing.role)
+                # БАГ 14 FIX: невалидная роль маршрутизации не должна ронять
+                # виток ValueError'ом — честный фолбэк (нет brain-бэкенда).
+                try:
+                    role = BrainRole(routing.role)
+                except ValueError:
+                    log.warning(
+                        "Неизвестная роль маршрутизации %r — откат на обычную цепочку тиров",
+                        getattr(routing, "role", None),
+                    )
+                    return None, None
                 template = BrainRequest(
                     user_request=routing.request_text, role=role,
                     privacy=PrivacyClass.PERSONAL,
@@ -1240,15 +1405,25 @@ class Agent:
         if (self._brain_fabric is not None and routing is not None
                 and getattr(routing, "brain_route", None) is not None):
             from core.brain import BrainFabricBackend, BrainRequest, BrainRole, PrivacyClass
-            role = BrainRole(routing.role)
-            template = BrainRequest(
-                user_request=routing.request_text, role=role,
-                privacy=(PrivacyClass.LOCAL_ONLY if routing.forced_local else PrivacyClass.PERSONAL),
-                context_tokens=routing.complexity.context_tokens,
-            )
-            return BrainFabricBackend(
-                self._brain_fabric, routing.brain_route, template=template,
-            ), routing.tier
+            # БАГ 14 FIX: как и выше — непонятная роль не убивает запрос,
+            # а уводит его на обычную тировую цепочку ниже.
+            try:
+                role = BrainRole(routing.role)
+            except ValueError:
+                log.warning(
+                    "Неизвестная роль маршрутизации %r — откат на цепочку тиров",
+                    getattr(routing, "role", None),
+                )
+                role = None
+            if role is not None:
+                template = BrainRequest(
+                    user_request=routing.request_text, role=role,
+                    privacy=(PrivacyClass.LOCAL_ONLY if routing.forced_local else PrivacyClass.PERSONAL),
+                    context_tokens=routing.complexity.context_tokens,
+                )
+                return BrainFabricBackend(
+                    self._brain_fabric, routing.brain_route, template=template,
+                ), routing.tier
 
         chain: List[Any] = []
         if routing is not None:
@@ -1542,7 +1717,18 @@ class Agent:
                     mode="cancelled",
                     trace=trace + [f"compound cancelled before clause {index}"],
                 )
-            outcome = self._execute_core(part, mission=None, cancel=cancel)
+            # Каждая часть составной команды маршрутизируется той же
+            # единственной точкой решения (clarify внутри части запрещён).
+            part_decision = semantic_route(
+                part,
+                SemanticRoutingContext(
+                    llm_available=self._llm_available_cached(),
+                    allow_clarify=False,
+                ),
+            )
+            outcome = self._execute_core(
+                part, mission=None, cancel=cancel, decision=part_decision,
+            )
             outcomes.append(outcome)
             trace.extend(f"compound[{index}] {item}" for item in outcome.trace[-8:])
 
@@ -1571,46 +1757,46 @@ class Agent:
             trace=trace,
         )
 
-    def _try_fast_path(self, goal: str, intent: str, mission: Optional[Mission],
+    #: Инструменты, чей путь от route() до verified-ответа не требует LLM
+    #: (шаг 3, офлайн-автономность детерминированных действий).
+    _DETERMINISTIC_TOOLS = frozenset({
+        "open_app", "close_app", "volume", "current_time", "system_status",
+        "play_music", "add_reminder", "list_reminders", "cancel_reminder",
+        "list_files", "search_files", "screen_capture",
+    })
+
+    def _try_fast_path(self, goal: str, decision: Optional[SemanticRoutingDecision],
+                       mission: Optional[Mission],
                        cancel: threading.Event,
                        risk: RiskAssessment) -> Optional[AgentOutcome]:
         """Детерминированный быстрый путь без планирования (§3).
 
-        Срабатывает только когда retrieval даёт ОДИН очевидный инструмент
-        с LOW риском и аргументы извлекаются тривиально.
+        Решение — decision из semantic_route(): инструмент и уверенность
+        приходят из единой точки маршрутизации, keyword-выбор удалён.
+        Если аргументы офлайн не извлеклись и провайдера нет — один
+        уточняющий вопрос вместо ошибки.
         """
-        if risk.needs_confirmation:
+        if risk.needs_confirmation or decision is None:
             return None
-        if intent not in ("app", "system", "media", "web"):
+        if decision.kind not in ("action", "fresh_data"):
+            return None
+        tool = decision.tool
+        if not tool:
+            return None
+        if decision.confidence < 0.55:
             return None
 
-        # Deterministic audit fixes: time and media do not compete with the
-        # reminder capability merely because the utterance contains a verb.
-        if intent == "media":
-            selected = CAPABILITIES.get("play_music")
-            caps = [selected] if selected is not None else []
-        elif intent == "web" and any(marker in goal.casefold() for marker in (
-            "найди", "поищи", "поиск", "найти информацию", "find",
-        )):
-            # Explicit web queries take a deterministic provider path.  This
-            # avoids paying the planner/memory cold-start tax for a plain
-            # lookup and keeps the research budget attached to the source.
-            selected = CAPABILITIES.get("web_search")
-            caps = [selected] if selected is not None else []
-        elif intent == "system" and any(word in goal.casefold() for word in ("который час", "сколько времени", "текущее время", "какая дата", "time", "clock")):
-            selected = CAPABILITIES.get("current_time")
-            caps = [selected] if selected is not None else []
-        elif intent == "system" and any(word in goal.casefold() for word in ("системный статус", "статус компьютера", "состояние системы", "статус системы")):
-            selected = CAPABILITIES.get("system_status")
-            caps = [selected] if selected is not None else []
-        else:
-            caps = CAPABILITIES.retrieve(goal, top_k=2)
-        if not caps:
+        cap = CAPABILITIES.get(tool)
+        if cap is None:
             return None
-        cap = caps[0]
+        caps = [cap]
 
         args = self._extract_simple_args(goal, cap)
         if args is None:
+            # Аргумент офлайн не извлёкся. Для детерминированных инструментов
+            # (например add_reminder «о чём напомнить?») — уточнение, не ошибка.
+            if tool in self._DETERMINISTIC_TOOLS and not self._llm_available_cached():
+                return self._clarify_for_tool(goal, tool, risk, trace=[])
             return None
 
         exec_risk = assess_risk(goal, cap.name, args)
@@ -1620,72 +1806,83 @@ class Agent:
         # Fast-path telemetry must never serialize the user request on a
         # synchronous file logger; structured traces retain the evidence.
         log.debug("FAST PATH: %s(%s)", cap.name, redact_args(args))
+        is_deterministic_fast = cap.name in self._DETERMINISTIC_TOOLS
         outcome = self._execute_verified(
             goal=goal, tool=cap.name, args=args, mission=mission, cancel=cancel,
             trace=[f"fast path -> {cap.name}"], risk=exec_risk, caps=caps,
-            fast_path=True, finalize_response=cap.name != "play_music",
+            fast_path=True, finalize_response=not is_deterministic_fast,
         )
-        if (cap.name == "play_music" and not outcome.text
-                and outcome.action_result is not None and outcome.verification is not None):
-            outcome.text = self._format_success(outcome.action_result, outcome.verification)
+        if not outcome.text and outcome.action_result is not None and outcome.verification is not None:
+            outcome.text = self._format_deterministic_result(
+                tool=cap.name, result=outcome.action_result,
+                verification=outcome.verification, args=args,
+            )
         outcome.mode = "fast_path"
         return outcome
+
+    #: Человеческие уточнения для инструментов без извлечённого аргумента.
+    _TOOL_CLARIFY = {
+        "add_reminder": "О чём напомнить?",
+        "open_app": "Какое приложение открыть?",
+        "close_app": "Какое приложение закрыть?",
+        "play_music": "Что включить?",
+        "search_files": "Что ищем?",
+        "volume": "Сделать громче или тише?",
+    }
+
+    def _clarify_for_tool(self, goal: str, tool: str, risk: RiskAssessment,
+                          trace: List[str]) -> AgentOutcome:
+        question = self._TOOL_CLARIFY.get(tool, "Уточните, пожалуйста, что именно сделать?")
+        return AgentOutcome(
+            text=question, verified=False, tool_used=None,
+            risk=risk, mode="clarification", trace=trace + [f"clarify for {tool} (offline, args missing)"],
+        )
 
     def _try_fresh_information(
         self, goal: str, mission: Optional[Mission], cancel: threading.Event,
         risk: RiskAssessment, trace: List[str],
+        decision: Optional[SemanticRoutingDecision] = None,
     ) -> Optional[AgentOutcome]:
-        """Route freshness-sensitive questions to live evidence before chat."""
+        """Route freshness-sensitive questions to live evidence before chat.
+
+        2026-09-05: substring-маркеры currency/weather/news удалены —
+        решение «свежие данные» и инструмент приходит из decision.
+        """
         if risk.needs_confirmation or cancel.is_set():
             return None
-        lowered = " ".join((goal or "").casefold().replace("ё", "е").split())
-        tool = ""
-        args: Dict[str, Any] = {}
-        if any(marker in lowered for marker in (
-            "курс доллар", "курс евро", "курс валют", "обменный курс",
-            "доллар сегодня", "евро сегодня", "usd rub", "eur rub",
-        )):
-            tool, args = "public_data", {"kind": "currency"}
-        elif "новост" in lowered:
-            query = re.sub(
-                r"\b(последние|последняя|свежие|сегодня|новости|новость)\b",
-                " ", lowered,
-            )
-            tool, args = "public_data", {
-                "kind": "news",
-                "query": " ".join(query.split()) or "главные события",
-                "max_results": 5,
-            }
-        elif any(marker in lowered for marker in (
-            "погод", "прогноз погод", "температура на улице",
-        )):
-            tool, args = "weather", {"forecast_days": 1}
-        elif any(marker in lowered for marker in (
-            "акции", "stock", "крипто", "биткоин", "ethereum", "спорт", "матч",
-            "цена", "стоимость", "наличие", "доступен ли", "последняя версия",
-            "текущая версия", "latest version",
-        )) and any(marker in lowered for marker in (
-            "сегодня", "сейчас", "текущ", "последн", "свеж", "latest", "цена",
-            "стоимость", "наличие", "доступен ли",
-        )):
-            tool, args = "web_search", {"query": goal.strip(), "max_results": 5}
-        if not tool:
+        if decision is None or decision.kind != "fresh_data":
             return None
-        self._mark_latency("context_complete")
-        capability = CAPABILITIES.get(tool)
-        if capability is None:
+        tool = decision.tool
+        if tool not in ("public_data", "weather", "web_search"):
+            return None
+        cap = CAPABILITIES.get(tool)
+        if cap is None:
             return AgentOutcome(
                 text=f"Источник свежих данных {tool} не зарегистрирован.",
                 verified=False, tool_used=tool, mode="tool",
                 trace=trace + ["freshness route missing capability"],
             )
-        trace.append(f"freshness route -> {tool}")
-        return self._execute_verified(
+        args = self._extract_simple_args(goal, cap)
+        if args is None:
+            args = {"query": goal.strip(), "max_results": 5} if tool == "web_search" else {}
+        trace.append(f"freshness route -> {tool} (routing)")
+        is_simple_fact = (
+            (tool == "public_data" and args.get("kind") == "currency")
+            or (tool == "weather" and args.get("forecast_days", 1) == 1)
+        )
+        outcome = self._execute_verified(
             goal=goal, tool=tool, args=args, mission=mission, cancel=cancel,
-            trace=trace, risk=assess_risk(goal, tool, args), caps=[capability],
+            trace=trace, risk=assess_risk(goal, tool, args), caps=[cap],
             fast_path=True,
             routing=self._model_router.route(goal, context_tokens=0),
+            finalize_response=not is_simple_fact,
         )
+        if not outcome.text and outcome.action_result is not None and outcome.verification is not None:
+            outcome.text = self._format_deterministic_result(
+                tool=tool, result=outcome.action_result,
+                verification=outcome.verification, args=args,
+            )
+        return outcome
 
     def _try_world_perception(
         self,
@@ -1825,13 +2022,189 @@ class Agent:
         if cap.name == "volume":
             if any(w in lowered for w in ("выключи звук", "mute", "без звука")):
                 return {"action": "mute"}
-            if any(w in lowered for w in ("тише", "убавь", "down")):
-                return {"action": "down"}
-            if any(w in lowered for w in ("громче", "прибавь", "up")):
-                return {"action": "up"}
-            return None
+            if any(w in lowered for w in ("тише", "убавь", "потише", "down")):
+                direction = "down"
+            elif any(w in lowered for w in ("громче", "прибавь", "погромче", "up")):
+                direction = "up"
+            else:
+                return None
+            args: Dict[str, Any] = {"action": direction}
+            # Детерминированное извлечение процентов: "сделай на 30 потише".
+            m = re.search(r"(\d{1,3})\s*(?:%|процент)", lowered)
+            if m:
+                args["percent"] = min(max(int(m.group(1)), 1), 100)
+            return args
+
+        if cap.name == "list_reminders":
+            return {}
+
+        if cap.name == "cancel_reminder":
+            return {}
+
+        if cap.name == "add_reminder":
+            return self._extract_reminder_args(goal)
+
+        if cap.name == "weather":
+            days = 1
+            m = re.search(r"на\s+(\d+)\s+дн", lowered)
+            if m:
+                days = min(max(int(m.group(1)), 1), 7)
+            return {"forecast_days": days}
+
+        if cap.name == "public_data":
+            if "новост" in lowered:
+                query = re.sub(
+                    r"\b(последние|последняя|свежие|сегодня|новости|новость)\b",
+                    " ", lowered,
+                )
+                return {
+                    "kind": "news",
+                    "query": " ".join(query.split()) or "главные события",
+                    "max_results": 5,
+                }
+            return {"kind": "currency"}
+
+        if cap.name == "list_files":
+            m = re.search(
+                r"(?:папк\w*|каталог\w*|директор\w*)\s+([A-Za-zА-Яа-я0-9_:\\/.\- ]+)$",
+                text, re.IGNORECASE,
+            )
+            return {"dir_path": m.group(1).strip()} if m else {}
+
+        if cap.name == "search_files":
+            query = text
+            for marker in ("найди файлы", "найди файл", "поищи файлы", "поищи файл",
+                           "найди документы", "ищи файлы", "search files"):
+                if lowered.startswith(marker):
+                    query = text[len(marker):].strip(" ,:—-")
+                    break
+            if not query:
+                return None
+            return {"query": query, "dir_path": ""}
+
+        if cap.name == "screen_capture":
+            return {}
 
         return None
+
+    def _extract_reminder_args(self, goal: str) -> Optional[Dict[str, Any]]:
+        """Детерминированное извлечение напоминания: минуты + текст.
+
+        Поддерживает «через N минут/секунд/час(ов)» и «в ЧЧ:ММ».
+        Возвращает None, если время не распознано или текст пуст —
+        тогда fast path уйдёт в уточняющий вопрос / planner.
+        """
+        from datetime import datetime, timedelta
+
+        text = goal.strip().rstrip(".!?")
+        lowered = text.casefold().replace("ё", "е")
+        minutes: Optional[float] = None
+
+        m = re.search(r"\bв\s*(\d{1,2})[:.](\d{2})\b", lowered)
+        if m:
+            now = datetime.now()
+            target = now.replace(
+                hour=int(m.group(1)) % 24, minute=int(m.group(2)),
+                second=0, microsecond=0,
+            )
+            if target <= now:
+                target += timedelta(days=1)
+            minutes = max((target - now).total_seconds() / 60.0, 0.1)
+        else:
+            m = re.search(
+                r"через\s+(\d+(?:[.,]\d+)?)\s*(секунд|минут|час)", lowered,
+            )
+            if m:
+                value = float(m.group(1).replace(",", "."))
+                unit = m.group(2)
+                if unit.startswith("секунд"):
+                    minutes = value / 60.0
+                elif unit.startswith("час"):
+                    minutes = value * 60.0
+                else:
+                    minutes = value
+        if minutes is None:
+            return None
+
+        # Текст напоминания: всё после «напомни...» минус временная фраза.
+        body = re.split(r"напомни(?:ть)?", text, maxsplit=1, flags=re.IGNORECASE)
+        remainder = body[1] if len(body) > 1 else ""
+        remainder = re.sub(
+            r"^\s*(?:через\s+\d+(?:[.,]\d+)?\s*(?:секунд\w*|минут\w*|час\w*|часа?)\s*"
+            r"|в\s*\d{1,2}[:.]\d{2}\s*|мне\s*)",
+            " ", remainder, flags=re.IGNORECASE,
+        )
+        reminder_text = remainder.strip(" ,:—-")
+        if not reminder_text:
+            return None
+        return {"text": reminder_text, "minutes": round(float(minutes), 3)}
+
+    _LLM_PROBE_TTL = 30.0
+
+    def _llm_available_cached(self) -> bool:
+        """Реальная доступность провайдера (health-эквивалент, кэш 30 c).
+
+        Не флаг режима: deepseek_brain_mode может быть включён при
+        недоступном провайдере — этот метод честно отвечает False.
+        """
+        now = time.monotonic()
+        cached = getattr(self, "_llm_probe", None)
+        if cached is not None and now - cached[0] < self._LLM_PROBE_TTL:
+            return bool(cached[1])
+        try:
+            available = bool(self._model_router.is_llm_available())
+        except Exception as exc:
+            log.debug("LLM availability probe failed: %s", exc)
+            available = False
+        self._llm_probe = (now, available)
+        return available
+
+    #: Честный ответ для неподдерживаемых запросов (шаг 5). Никаких
+    #: подмен похожим инструментом и вызовов провайдера.
+    _UNSUPPORTED_HINTS = {
+        "file_delete": "удаление файлов пока не поддерживается — сделайте это вручную в Проводнике",
+        "power": "управление питанием компьютера пока не поддерживается",
+        "registry": "работа с реестром Windows не поддерживается",
+        "email": "отправка почты пока не поддерживается",
+    }
+
+    def _handle_unsupported(self, decision: SemanticRoutingDecision, goal: str,
+                            mission: Optional[Mission], trace: List[str]) -> AgentOutcome:
+        top = [c for c, _ in (decision.candidates or [])][:3]
+        self._log_unsupported_request(goal, decision, top)
+        trace.append(f"unsupported: tool=None candidates={top}")
+        if mission is not None:
+            mission.metadata["unsupported"] = {"candidates": top}
+        reason = "эта возможность пока не реализована"
+        text = (
+            f"Я не умею {reason}. Пока не буду делать этого, чтобы не "
+            f"навредить. Могу показать список того, что умею — просто спросите."
+        )
+        return AgentOutcome(
+            text=text, verified=True, tool_used=None, mode="unsupported",
+            trace=trace,
+        )
+
+    def _log_unsupported_request(self, goal: str, decision: SemanticRoutingDecision,
+                                 top: List[str]) -> None:
+        """Backlog продукта: неподдерживаемые запросы в jsonl (без секретов)."""
+        try:
+            from core.redact import redact_secrets
+            from config.settings import Settings
+
+            data_dir = Path(Settings().data_dir) if not self._settings else Path(self._settings.data_dir)
+            log_dir = data_dir / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "text": str(redact_secrets(goal))[:300],
+                "top_candidates": list(top),
+                "risk": decision.risk,
+            }
+            with open(log_dir / "unsupported_requests.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            log.debug("Не удалось записать unsupported request: %s", exc)
 
     def _choose_music_query(self, goal: str) -> str:
         """Use the configured brain once for an actual choice, never chooser words."""
@@ -2795,18 +3168,38 @@ class Agent:
                 final_context = (
                     f"{memory_ctx}\nVerified observations for this task:\n{execution_context}"
                 ).strip()
-                text = self._finalize_tool_response(
-                    goal=goal,
-                    tool=decision.tool,
-                    args=decision.arguments,
-                    result=result,
-                    verification=verification,
-                    routing=routing,
-                    memory_ctx=final_context,
-                    caps=caps,
-                )
+                try:
+                    text = self._finalize_tool_response(
+                        goal=goal,
+                        tool=decision.tool,
+                        args=decision.arguments,
+                        result=result,
+                        verification=verification,
+                        routing=routing,
+                        memory_ctx=final_context,
+                        caps=caps,
+                    )
+                except Exception as exc:
+                    log.warning("Finalize tool response exception: %s", exc)
+                    text = ""
+                    self._last_finalizer_error = str(exc)
                 if not text:
-                    text = "Ошибка DeepInfra: verified tool result получен, но финальная реплика модели не сформирована."
+                    if verification.verified:
+                        finalizer_err = getattr(self, "_last_finalizer_error", "") or "finalizer unavailable or empty"
+                        trace.append(f"finalizer_error: {finalizer_err}")
+                        if mission is not None:
+                            mission.metadata["finalizer_error"] = finalizer_err
+                        text = self._format_deterministic_result(
+                            tool=decision.tool, result=result, verification=verification, args=decision.arguments,
+                        )
+                    else:
+                        text = "Ошибка DeepInfra: verified tool result получен, но финальная реплика модели не сформирована."
+                elif verification.verified and decision.tool in {"public_data", "weather"} and result and result.output:
+                    if not verify_atomic_values_preserved(text, result.output):
+                        trace.append("finalizer_dropped_fact")
+                        if mission is not None:
+                            mission.metadata["finalizer_dropped_fact"] = True
+                        text = render_structured_fact(result.output)
                 return AgentOutcome(
                     text=text,
                     verified=True,
@@ -2925,6 +3318,7 @@ class Agent:
             extra={
                 "confirmation_approved": bool(confirmation_approved),
                 "task_runtime": self._task_runtime,
+                "tool_executor": self._tool_executor,
                 "authority_grant_id": (
                     self.authorize_delegated_action(
                         mission, goal=goal, tool=tool, args=args, risk=risk,
@@ -3048,6 +3442,18 @@ class Agent:
 
         # ---- REPAIR (§10, §11) ----
         if not verification.verified:
+            # БАГ 16 FIX: non_repeatable=True означает что действие выполнено
+            # (поиск открыт, запрос отправлен), но подтвердить невозможно.
+            # Repair loop не должен повторять вызов — это приведёт к двойному
+            # запуску. Возвращаем честный ответ пользователю без retry.
+            if getattr(verification, "non_repeatable", False):
+                trace.append(f"non_repeatable verification: {verification.detail}")
+                return AgentOutcome(
+                    text=verification.detail or f"Выполнено (подтверждение недоступно): {tool}",
+                    verified=False, verification=verification,
+                    tool_used=tool, risk=risk, mode="tool", trace=trace,
+                    action_result=result,
+                )
             # Deterministic policy/input failures are not transient provider
             # faults.  Re-running them only creates noise and a false backlog.
             if tool == "play_music" and any(marker in (result.error or "") for marker in (
@@ -3153,16 +3559,36 @@ class Agent:
                 trace=trace,
                 action_result=result,
             )
-        text = self._finalize_tool_response(
-            goal=goal, tool=tool, args=args, result=result,
-            verification=verification, routing=routing, memory_ctx=memory_ctx,
-            caps=caps,
-        ) if self.deepseek_brain_mode else self._format_success(result, verification)
+        try:
+            text = self._finalize_tool_response(
+                goal=goal, tool=tool, args=args, result=result,
+                verification=verification, routing=routing, memory_ctx=memory_ctx,
+                caps=caps,
+            ) if self.deepseek_brain_mode else self._format_success(result, verification)
+        except Exception as exc:
+            log.warning("Tool response finalization exception for %s: %s", tool, exc)
+            text = ""
+            self._last_finalizer_error = str(exc)
         if not text:
-            text = (
-                f"Ошибка DeepInfra: verified tool result получен, "
-                "но финальная реплика модели не сформирована."
-            )
+            if verification.verified:
+                finalizer_err = getattr(self, "_last_finalizer_error", "") or "finalizer unavailable or empty"
+                trace.append(f"finalizer_error: {finalizer_err}")
+                if mission is not None:
+                    mission.metadata["finalizer_error"] = finalizer_err
+                text = self._format_deterministic_result(
+                    tool=tool, result=result, verification=verification, args=args,
+                )
+            else:
+                text = (
+                    f"Ошибка DeepInfra: verified tool result получен, "
+                    "но финальная реплика модели не сформирована."
+                )
+        elif verification.verified and tool in {"public_data", "weather"} and result and result.output:
+            if not verify_atomic_values_preserved(text, result.output):
+                trace.append("finalizer_dropped_fact")
+                if mission is not None:
+                    mission.metadata["finalizer_dropped_fact"] = True
+                text = render_structured_fact(result.output)
         # P0-5: сохраняем успешный факт в локальную память (store/use).
         if verification.verified:
             try:
@@ -3272,6 +3698,7 @@ class Agent:
                 log.warning("DeepSeek final response attempt %s failed after %s: %s",
                             attempt + 1, tool, exc)
         log.error("DeepSeek final response exhausted after %s: %s", tool, last_error)
+        self._last_finalizer_error = last_error
         return ""
 
     def _finalize_conversational_response(self, *, goal: str, draft: str,
@@ -3316,14 +3743,88 @@ class Agent:
     @staticmethod
     def _format_success(result: ActionResult, verification: VerificationResult) -> str:
         """Формирует честный ответ пользователю (§14)."""
-        if isinstance(result.output, Mapping) and result.output.get("summary"):
-            body = str(result.output["summary"]).strip()
+        if isinstance(result.output, Mapping):
+            if result.output.get("summary"):
+                body = str(result.output["summary"]).strip()
+            else:
+                body = render_structured_fact(result.output)
         else:
             body = str(result.output).strip() if result.output else "Выполнено."
         if not verification.strict:
             # Не врём, что проверили фактически.
             return f"{body}\n\n(Проверка: {verification.detail}.)"
         return body
+
+    @staticmethod
+    def _format_deterministic_result(
+        tool: str,
+        result: Optional[ActionResult],
+        verification: Optional[VerificationResult],
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Формирует понятный детерминированный ответ без обращения к LLM."""
+        if result is None:
+            return "Готово: действие выполнено."
+
+        if tool in {"public_data", "weather"}:
+            if isinstance(result.output, Mapping):
+                return render_structured_fact(result.output)
+            if isinstance(result.output, str) and result.output.strip():
+                return result.output.strip()
+            return Agent._format_success(result, verification) if verification else "Готово."
+
+        # Если в output уже есть понятная готовая строка (например, время или громкость)
+        if isinstance(result.output, str) and result.output.strip():
+            if tool == "open_app":
+                name = (args or {}).get("name")
+                if name:
+                    return f"Готово: открыл {name}."
+            elif tool == "close_app":
+                name = (args or {}).get("name")
+                if name:
+                    return f"Готово: закрыл {name}."
+            return result.output.strip()
+
+        if tool == "open_app":
+            name = (args or {}).get("name")
+            return f"Готово: открыл {name}." if name else "Готово: приложение открыто."
+
+        if tool == "close_app":
+            name = (args or {}).get("name")
+            return f"Готово: закрыл {name}." if name else "Готово: приложение закрыто."
+
+        if tool == "volume":
+            action = (args or {}).get("action")
+            if action == "mute":
+                return "Звук выключен."
+            return "Громкость изменена."
+
+        if tool == "current_time":
+            if isinstance(result.output, Mapping):
+                t = result.output.get("time")
+                d = result.output.get("date")
+                if t and d:
+                    return f"Сейчас {t}, {d}."
+            return "Время проверено."
+
+        if tool == "system_status":
+            if isinstance(result.output, Mapping):
+                cpu = result.output.get("cpu_percent")
+                ram = result.output.get("ram")
+                ram_used = ram.get("used_percent") if isinstance(ram, Mapping) else None
+                parts = []
+                if cpu is not None:
+                    parts.append(f"ЦП: {cpu}%")
+                if ram_used is not None:
+                    parts.append(f"ОЗУ: {ram_used}%")
+                if parts:
+                    return f"Статус системы: {', '.join(parts)}."
+            return "Статус системы проверен."
+
+        # Для play_music и остальных инструментов используем стандартный _format_success
+        if verification is not None:
+            return Agent._format_success(result, verification)
+        return "Готово."
 
     # ------------------------------------------------------------------ #
     #  Sprint 2 — прямой разговор (без инструментов и без JSON-плана)
@@ -3623,7 +4124,10 @@ class Agent:
             if capability_plan.steps:
                 capability_engine = CapabilityEngine(
                     self._capability_catalog, self._registry,
-                    context=ToolContext(settings=self._settings),
+                    context=ToolContext(
+                        settings=self._settings,
+                        extra={"tool_executor": self._tool_executor},
+                    ),
                 )
                 capability_report = capability_engine.execute(capability_plan, max_repairs=2)
                 trace.extend(f"capability: {item}" for item in capability_report.action_trace)
@@ -3672,7 +4176,11 @@ class Agent:
                     if prepared.status == "registered":
                         result = execute_tool(
                             self._registry, prepared.name, {"request": goal},
-                            ToolContext(settings=self._settings), max_retries=0,
+                            ToolContext(
+                                settings=self._settings,
+                                extra={"tool_executor": self._tool_executor},
+                            ),
+                            max_retries=0,
                         )
                         verification = verify_action_result(result)
                         trace.append(

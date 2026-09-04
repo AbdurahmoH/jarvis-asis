@@ -59,6 +59,11 @@ class VerificationResult:
         detail: человекочитаемая деталь для отчёта.
         strict: True — это была НАСТОЯЩАЯ фактическая проверка;
             False — мы лишь доверились ``ok`` (нет специализированного verifier).
+        non_repeatable: True — действие выполнено (поиск открыт, запрос отправлен),
+            но подтвердить результат невозможно. Repair loop НЕ должен повторять
+            вызов того же инструмента с теми же аргументами — это приведёт к
+            двойному запуску. Пользователь получает честный ответ без retry.
+            БАГ 16 FIX: play_music search_opened → non_repeatable=True.
     """
 
     verified: bool
@@ -66,6 +71,7 @@ class VerificationResult:
     detail: str = ""
     strict: bool = True
     checked_at: float = field(default_factory=time.time)
+    non_repeatable: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -73,6 +79,7 @@ class VerificationResult:
             "method": self.method,
             "detail": self.detail,
             "strict": self.strict,
+            "non_repeatable": self.non_repeatable,
         }
 
     def __bool__(self) -> bool:
@@ -483,10 +490,13 @@ def verify_play_music(result: ActionResult) -> VerificationResult:
         or "поиск музыки" in text.casefold()
         or (source == "spotify" and bool(query))
     ):
+        # БАГ 16 FIX: non_repeatable=True — поиск уже открыт, повторный вызов
+        # play_music приведёт к двойному запуску. Repair loop не должен retry.
         return VerificationResult(
             False,
             "media_playback",
             "открыта поисковая страница; воспроизведение не подтверждено",
+            non_repeatable=True,
         )
     if not result.ok:
         return VerificationResult(False, "media_playback", result.error or "медиаточка не открыта")

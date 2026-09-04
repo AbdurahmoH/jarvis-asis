@@ -296,6 +296,7 @@ class VoiceActivityDetector:
         self._fail_closed = bool(fail_closed)
         self._vad = None
         self._silero = None
+        self._warned_invalid_frame = False
         if prefer_silero:
             try:
                 from silero_vad import load_silero_vad  # type: ignore
@@ -331,5 +332,8 @@ class VoiceActivityDetector:
             return False if self._fail_closed else bool(any(frame))
         try:
             return bool(self._vad.is_speech(frame, sample_rate))
-        except Exception:
+        except Exception as exc:
+            if not getattr(self, "_warned_invalid_frame", False):
+                self._warned_invalid_frame = True
+                log.warning("webrtcvad rejected frame of length %d bytes: %s", len(frame), exc)
             return False

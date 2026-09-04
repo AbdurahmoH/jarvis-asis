@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from datetime import datetime
 
 import requests
 
 from config.settings import Settings
 from core.actions.base import ActionResult, Tool, ToolContext
 from core.actions.registry import DEFAULT_REGISTRY
+from core.network_guard import safe_http_get
 from core.utils.logger import get_logger
 
 __all__ = ["WeatherTool", "get_weather", "geocode_location", "get_ip_location"]
@@ -71,7 +73,7 @@ def get_ip_location() -> Optional[Dict[str, float]]:
         {"lat": ..., "lon": ..., "city": ..., "country": ...} или None.
     """
     try:
-        resp = requests.get(_IP_API_URL, timeout=_REQUEST_TIMEOUT)
+        resp = safe_http_get(_IP_API_URL, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         if "latitude" in data and "longitude" in data:
@@ -99,7 +101,7 @@ def geocode_location(location: str) -> Optional[Dict[str, Any]]:
         # Open-Meteo geocoding API
         url = "https://geocoding-api.open-meteo.com/v1/search"
         params = {"name": location, "count": 1, "language": "ru", "format": "json"}
-        resp = requests.get(url, params=params, timeout=_REQUEST_TIMEOUT)
+        resp = safe_http_get(url, params=params, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         results = data.get("results")
@@ -173,7 +175,7 @@ def get_weather(
     }
 
     try:
-        resp = requests.get(_OPEN_METEO_URL, params=params, timeout=_REQUEST_TIMEOUT)
+        resp = safe_http_get(_OPEN_METEO_URL, params=params, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
@@ -293,11 +295,26 @@ class WeatherTool(Tool):
                     f"    {day['date']}: {day['temp_min']}…{day['temp_max']}°C, {day['weather']}"
                 )
 
+        text_summary = "\n".join(lines)
+        now_str = datetime.now().strftime("%H:%M")
+        output_data = {
+            "summary": text_summary,
+            "text": text_summary,
+            "value": cur.get("temp"),
+            "unit": "°C",
+            "subject": f"погода в {loc.get('name', 'городе')}",
+            "source": "open-meteo.com",
+            "fetched_at": now_str,
+            "location": loc,
+            "current": cur,
+            "forecast": fc,
+        }
+
         return ActionResult(
             tool=self.name,
             args=args,
             ok=True,
-            output="\n".join(lines),
+            output=output_data,
         )
 
 

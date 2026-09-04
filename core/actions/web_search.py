@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 from config.settings import Settings
 from core.actions.base import ActionResult, Tool, ToolContext
 from core.actions.registry import DEFAULT_REGISTRY
+from core.network_guard import SSRFBlocked, safe_http_post
 from core.utils.logger import get_logger
 
 __all__ = ["WebSearchTool", "duckduckgo_search"]
@@ -58,14 +59,14 @@ def duckduckgo_search(query: str, max_results: int = 5, timeout: float | None = 
     headers = {"User-Agent": _USER_AGENT}
 
     try:
-        resp = requests.post(
+        resp = safe_http_post(
             _DDG_HTML_URL,
             data=params,
             headers=headers,
             timeout=float(timeout or _REQUEST_TIMEOUT),
         )
         resp.raise_for_status()
-    except requests.RequestException as exc:
+    except (requests.RequestException, SSRFBlocked) as exc:
         log.error("Ошибка запроса к DuckDuckGo: %s", exc)
         return []
 

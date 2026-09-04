@@ -72,6 +72,9 @@ EXAMPLE_FILENAME = "settings.example.json"
 #: Провайдер локальной модели — единственный, которому не нужен API-ключ.
 LOCAL_PROVIDER = "local"
 
+#: Мультиязычная модель эмбеддингов по умолчанию (Шаг 0).
+DEFAULT_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
 
 class ConfigError(RuntimeError):
     """Ошибка конфигурации: файл не найден, битый JSON, не прошла валидация."""
@@ -204,6 +207,7 @@ class LocalModelConfig(_Section):
     # its validated JSON contract when a provider or old wheel rejects them.
     native_tool_calling: bool = True
     embedding_gguf_path: str = ""
+    embedding_model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"
     n_gpu_layers: int = 0           # 0 = CPU, -1 = все слои на GPU
     n_ctx: int = 4096
     n_threads: int = 0              # 0 = автоопределение по числу ядер

@@ -28,9 +28,14 @@ import urllib.request
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+import requests
+
 from core.utils.logger import get_logger
 
-__all__ = ["is_ssrf_blocked", "assert_safe_url", "safe_redirect_url", "safe_urlopen", "SSRFBlocked"]
+__all__ = [
+    "is_ssrf_blocked", "assert_safe_url", "safe_redirect_url", "safe_urlopen",
+    "safe_http_request", "safe_http_get", "safe_http_post", "SSRFBlocked",
+]
 
 log = get_logger(__name__)
 
@@ -238,3 +243,48 @@ def safe_urlopen(request: object, *, timeout: float) -> Any:
         _ValidatedRedirectHandler(), _PinnedHTTPHandler(), _PinnedHTTPSHandler()
     )
     return opener.open(request, timeout=timeout)
+
+
+#: Редиректы, которые requests обычно отрабатывает сам — здесь мы ведём их вручную.
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def safe_http_request(method: str, url: str, *, timeout: Any = 15, max_hops: int = 5, **kwargs: Any):
+    """requests-вызов с SSRF-гвардом на каждом hop (ДЫРА 4).
+
+    ``requests`` не даёт закрепить проверку IP без переписывания transport'а,
+    поэтому минимум по контракту безопасности: ``assert_safe_url`` до запроса,
+    ``allow_redirects=False`` и ручной follow с повторной проверкой каждого
+    Location (включая повторный DNS-резолв) и лимитом hops.
+    """
+    method = str(method).upper()
+    current = assert_safe_url(str(url))
+    data = kwargs.pop("data", None)
+    json_body = kwargs.pop("json", None)
+    for _hop in range(max_hops + 1):
+        assert_safe_url(current)
+        resp = requests.request(
+            method, current, data=data, json=json_body,
+            timeout=timeout, allow_redirects=False, **kwargs,
+        )
+        if resp.status_code not in _REDIRECT_STATUSES:
+            return resp
+        location = resp.headers.get("Location", "")
+        if not location.strip():
+            return resp
+        current = safe_redirect_url(current, location)
+        # 301/302/303 на POST semantics: браузеры и requests переключают
+        # метод на GET и сбрасывают тело — повторяем то же поведение.
+        if method != "GET" and resp.status_code in (301, 302, 303):
+            method, data, json_body = "GET", None, None
+    raise SSRFBlocked(f"Слишком много редиректов (> {max_hops}) при запросе {url}")
+
+
+def safe_http_get(url: str, **kwargs: Any):
+    """GET с тем же SSRF-гвардом, что и ``safe_urlopen`` (ДЫРА 4)."""
+    return safe_http_request("GET", url, **kwargs)
+
+
+def safe_http_post(url: str, **kwargs: Any):
+    """POST с тем же SSRF-гвардом, что и ``safe_urlopen`` (ДЫРА 4)."""
+    return safe_http_request("POST", url, **kwargs)

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from config.settings import Settings
 from core.actions.base import ToolContext
 from core.actions.computer_use import (
@@ -11,6 +13,19 @@ from core.actions.computer_use import (
     _BACKEND,
 )
 from core.verifier import has_strict_verifier, verify_action_result
+
+
+def _has_interactive_desktop() -> bool:
+    try:
+        import mss
+        mss_cls = getattr(mss, "MSS", mss.mss)
+        with mss_cls() as sct:
+            monitor = sct.monitors[0]
+            region = {"top": monitor["top"], "left": monitor["left"], "width": 1, "height": 1}
+            sct.grab(region)
+            return True
+    except Exception:
+        return False
 
 
 def test_computer_use_tools_registered_with_strict_verifiers():
@@ -27,6 +42,10 @@ def test_production_adapter_uses_real_backend():
     assert "Physically" in ComputerKeyboardTool().description
 
 
+@pytest.mark.skipif(
+    not _has_interactive_desktop(),
+    reason="Physical desktop capture unavailable (BitBlt failed in non-interactive/headless session)",
+)
 def test_screenshot_is_physical_and_verified(tmp_path):
     settings = Settings()
     settings.paths.documents_dir = str(tmp_path)

@@ -48,8 +48,21 @@ def test_mood_context_does_not_become_an_implicit_network_query():
 def test_network_music_search_is_not_mistaken_for_verified_playback(settings):
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
     capability = CAPABILITIES.get("play_music")
+    # Сеть и аудио-сессии мокаются: тест должен проверять КОНТРАКТ
+    # («поиск ≠ воспроизведение»), а не состояние машины разработчика
+    # (реальный интернет + запущенный браузер давали ложный verified=True).
+    class _NoVideoResponse:
+        text = "{}"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
     with patch("core.actions.media._open_target", return_value=True) as opener, \
-         patch("core.actions.media.webbrowser.open") as browser:
+         patch("core.actions.media.duckduckgo_search", return_value=[]), \
+         patch("core.actions.media.safe_http_get", return_value=_NoVideoResponse()), \
+         patch("core.actions.media.webbrowser.open") as browser, \
+         patch("core.verifier._active_audio_sessions", return_value=[]):
         outcome = agent._execute_verified(
             goal="поставь музыку",
             tool="play_music",
@@ -63,7 +76,7 @@ def test_network_music_search_is_not_mistaken_for_verified_playback(settings):
 
     assert outcome.verified is False
     assert outcome.tool_used == "play_music"
-    assert "Ошибка действия play_music" in outcome.text
+    assert "воспроизведение не подтверждено" in outcome.text
     assert opener.called
     browser.assert_not_called()
 
