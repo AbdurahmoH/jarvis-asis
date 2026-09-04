@@ -69,7 +69,7 @@ class Proactor:
                 return
             self._running = True
             self._stop = threading.Event()
-            self._thread = threading.Thread(target=self._loop, daemon=False, name="Proactor")
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="Proactor")
             self._thread.start()
             log.info("Proactor запущен (cooldown=%d мин, interval=%d сек)", self._cooldown_min, self._interval_sec)
 

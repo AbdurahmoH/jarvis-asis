@@ -39,20 +39,36 @@ class Reminder:
 
 
 class TaskManager:
-    """Менеджер напоминаний на основе threading.Timer.
+    """Менеджер напоминаний: фасад над TaskRuntime с fallback на threading.Timer.
 
-    Не персистентен — при перезапуске приложения напоминания теряются.
-    Для персистентности нужно хранить в БД (будущая доработка).
+    Когда TaskRuntime подключён, напоминания сохраняются как durable missions,
+    переживают рестарт и исполняются через единый планировщик runtime.
+    При отсутствии TaskRuntime используется threading.Timer (для изолированных тестов).
 
     Args:
         callback: функция, вызываемая при срабатывании напоминания.
             Сигнатура: callback(reminder_id: str, text: str) -> None.
+        task_runtime: экземпляр TaskRuntime (единый источник правды).
     """
 
-    def __init__(self, callback: Optional[Callable[[str, str], None]] = None) -> None:
+    def __init__(
+        self,
+        callback: Optional[Callable[[str, str], None]] = None,
+        task_runtime: Optional[Any] = None,
+    ) -> None:
         self._reminders: Dict[str, Reminder] = {}
         self._lock = threading.RLock()
         self._callback = callback
+        self._task_runtime = task_runtime
+
+    def set_runtime(self, runtime: Any) -> None:
+        """Подключает TaskRuntime к менеджеру напоминаний."""
+        with self._lock:
+            self._task_runtime = runtime
+
+    @property
+    def runtime(self) -> Optional[Any]:
+        return self._task_runtime
 
     def add_reminder_in_minutes(self, text: str, minutes: int) -> str:
         """Добавляет напоминание.
@@ -62,12 +78,53 @@ class TaskManager:
             minutes: через сколько минут сработать (>= 1).
 
         Returns:
-            ID напоминания (uuid).
+            ID напоминания (task_id миссии или uuid).
         """
         if not text or not text.strip():
             raise ValueError("Текст напоминания не может быть пустым")
         if minutes < 1:
             raise ValueError("Минимум 1 минута")
+
+        with self._lock:
+            runtime = self._task_runtime
+
+        if runtime is not None:
+            from core.task_runtime import MissedTriggerPolicy, MissionTrigger
+
+            clock = getattr(runtime, "_clock", None)
+            now_dt = clock() if callable(clock) else datetime.now(timezone.utc)
+            if now_dt.tzinfo is None:
+                now_dt = now_dt.replace(tzinfo=timezone.utc)
+            due_at = now_dt + timedelta(minutes=int(minutes))
+
+            def _reminder_runner(mission, cancel_ev):
+                text_to_notify = str(mission.context.get("notification_text") or mission.goal)
+                if self._callback:
+                    try:
+                        self._callback(mission.task_id, text_to_notify)
+                    except Exception as exc:
+                        log.error("Ошибка в callback напоминания %s: %s", mission.task_id, exc)
+                mission.verification = {
+                    "verified": True,
+                    "method": "task_manager_notification",
+                    "detail": "dispatched",
+                    "strict": True,
+                }
+                return f"Напоминание: {text_to_notify}"
+
+            mission = runtime.schedule(
+                f"Напомнить пользователю: {text.strip()}",
+                MissionTrigger.at(
+                    due_at, missed_policy=MissedTriggerPolicy.NOTIFY_LATE,
+                    max_lateness_sec=0,
+                ),
+                runner=_reminder_runner,
+                context={"notification_text": text.strip()},
+                completion_criteria={"notification_dispatched": True},
+                metadata={"durable_kind": "reminder", "source": "add_reminder"},
+            )
+            log.info("Добавлено напоминание (TaskRuntime) #%s через %d мин: %s", mission.task_id, minutes, text[:50])
+            return mission.task_id
 
         reminder_id = uuid.uuid4().hex[:8]
         due_at = time.time() + minutes * 60
@@ -95,6 +152,53 @@ class TaskManager:
     def list_reminders(self) -> List[Dict[str, Any]]:
         """Возвращает список активных напоминаний."""
         with self._lock:
+            runtime = self._task_runtime
+
+        if runtime is not None:
+            clock = getattr(runtime, "_clock", None)
+            now_dt = clock() if callable(clock) else datetime.now(timezone.utc)
+            if now_dt.tzinfo is None:
+                now_dt = now_dt.replace(tzinfo=timezone.utc)
+            now_ts = now_dt.timestamp()
+
+            result = []
+            for mission in runtime.list_missions(include_terminal=False):
+                if mission.metadata.get("durable_kind") != "reminder":
+                    continue
+                due_at_str = str((mission.trigger or {}).get("due_at") or "")
+                due_ts = now_ts
+                if due_at_str:
+                    try:
+                        due_dt = datetime.fromisoformat(due_at_str)
+                        if due_dt.tzinfo is None:
+                            due_dt = due_dt.replace(tzinfo=timezone.utc)
+                        due_ts = due_dt.timestamp()
+                    except Exception:
+                        due_ts = now_ts
+
+                remaining = max(0, int(due_ts - now_ts))
+                created_ts = now_ts
+                if mission.created_at:
+                    try:
+                        created_dt = datetime.fromisoformat(mission.created_at)
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        created_ts = created_dt.timestamp()
+                    except Exception:
+                        created_ts = now_ts
+
+                result.append(
+                    {
+                        "id": mission.task_id,
+                        "text": mission.context.get("notification_text", mission.goal),
+                        "due_at": due_ts,
+                        "remaining_sec": remaining,
+                        "created_at": created_ts,
+                    }
+                )
+            return sorted(result, key=lambda x: x["due_at"])
+
+        with self._lock:
             now = time.time()
             result = []
             for rem in self._reminders.values():
@@ -117,6 +221,17 @@ class TaskManager:
             True — было отменено, False — не найдено.
         """
         with self._lock:
+            runtime = self._task_runtime
+
+        if runtime is not None:
+            mission = runtime.get(reminder_id)
+            if mission is not None and mission.metadata.get("durable_kind") == "reminder":
+                canceled = runtime.cancel(reminder_id)
+                if canceled:
+                    log.info("Отменено напоминание (TaskRuntime) #%s", reminder_id)
+                    return True
+
+        with self._lock:
             rem = self._reminders.pop(reminder_id, None)
         if rem:
             rem.timer.cancel()
@@ -126,8 +241,18 @@ class TaskManager:
 
     def clear_all(self) -> int:
         """Отменяет все напоминания. Возвращает число отменённых."""
+        count = 0
         with self._lock:
-            count = len(self._reminders)
+            runtime = self._task_runtime
+
+        if runtime is not None:
+            for mission in runtime.list_missions(include_terminal=False):
+                if mission.metadata.get("durable_kind") == "reminder":
+                    if runtime.cancel(mission.task_id):
+                        count += 1
+
+        with self._lock:
+            count += len(self._reminders)
             for rem in self._reminders.values():
                 rem.timer.cancel()
             self._reminders.clear()

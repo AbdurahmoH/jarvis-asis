@@ -59,7 +59,7 @@ class BackgroundScheduler:
                 return
             self._running = True
             self._stop = threading.Event()
-            self._thread = threading.Thread(target=self._loop, daemon=False, name="BackgroundScheduler")
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="BackgroundScheduler")
             self._thread.start()
             log.info("BackgroundScheduler запущен (nightly=%s)", self._nightly_time.strftime("%H:%M"))
 

@@ -64,12 +64,15 @@ class RiskAssessment:
     def needs_confirmation(self) -> bool:
         return self.level.requires_confirmation
 
-    def confirmation_prompt(self) -> str:
+    def confirmation_prompt(self, address: str = "") -> str:
         """Текст запроса подтверждения для пользователя."""
         why = "; ".join(self.reasons) if self.reasons else "операция повышенного риска"
         target = f" инструментом '{self.tool}'" if self.tool else ""
+        addr = address.strip()
+        prefix = f"{addr}, " if addr else ""
+        capitalized = f"{prefix}требуется ваше подтверждение" if prefix else "Требуется ваше подтверждение"
         return (
-            f"Сэр, требуется ваше подтверждение{target}: {why}. "
+            f"{capitalized}{target}: {why}. "
             f"Подтвердите выполнение (да / нет)."
         )
 
@@ -105,7 +108,7 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
             reasons.append(why)
 
     # 1) Единый источник: текст цели + аргументы (semantic_router).
-    text_level, _ = routing_assess_risk(None, arguments, goal)
+    text_level, _ = routing_assess_risk(tool, arguments, goal)
     if _LEVEL_ORDER.get(text_level, 0) > 0:
         bump(RiskLevel(text_level), "риск цели/аргументов по семантической оценке")
 

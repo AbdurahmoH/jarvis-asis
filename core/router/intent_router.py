@@ -142,8 +142,4 @@ def split_compound_commands(query: str) -> List[str]:
     parts = [part.strip(" ,;:") for part in _COMPOUND_SEPARATOR.split(clean) if part.strip(" ,;:")]
     if len(parts) < 2:
         return []
-    categories = [resolve_keyword_tool(part, part) for part in parts]
-    actionable = [category for category in categories if category != INTENT_NONE]
-    if len(actionable) < 2:
-        return []
     return parts

@@ -44,6 +44,7 @@ __all__ = [
     "verify_command_exit",
     "has_strict_verifier",
     "list_verified_tools",
+    "verify_volume",
 ]
 
 log = get_logger(__name__)
@@ -558,6 +559,16 @@ def _active_audio_sessions() -> List[str]:
     return active
 
 
+def verify_volume(result: ActionResult) -> VerificationResult:
+    """volume: громкость успешно изменена или переключена."""
+    if not result.ok:
+        return VerificationResult(False, "volume_change", result.error or "ok=False")
+    text = _output_text(result).strip()
+    if len(text) < 3:
+        return VerificationResult(False, "volume_change", "пустой ответ действия громкости")
+    return VerificationResult(True, "volume_change", text)
+
+
 def verify_computer_action(result: ActionResult) -> VerificationResult:
     """Computer tools: physical backend plus a post-action observation."""
     if not result.ok:
@@ -675,3 +686,6 @@ register_verifier("computer_keyboard", verify_computer_action)
 register_verifier("computer_screenshot", verify_computer_action)
 register_verifier("browser_bridge", verify_browser_bridge)
 register_verifier("browser_automation", verify_internal_browser)
+register_verifier("volume", verify_volume)
+register_verifier("adjust_volume", verify_volume)
+register_verifier("mute_volume", verify_volume)

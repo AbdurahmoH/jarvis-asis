@@ -39,7 +39,7 @@ class PersonalityProfile:
     verbosity: str = "adaptive"
     initiative: str = "assistant"
     respect_level: str = "high"
-    address: str = ""
+    address: str = "сэр"
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "PersonalityProfile":
@@ -50,7 +50,7 @@ class PersonalityProfile:
             verbosity=str(data.get("verbosity") or cls.verbosity),
             initiative=str(data.get("initiative") or cls.initiative),
             respect_level=str(data.get("respect_level") or cls.respect_level),
-            address=str(data.get("address") or cls.address),
+            address=str(data["address"]) if "address" in data and data["address"] is not None else cls.address,
         )
 
 

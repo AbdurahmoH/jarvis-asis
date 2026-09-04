@@ -19,7 +19,10 @@ def test_time_intent_and_tool_are_deterministic():
 def test_media_request_never_routes_to_reminder(monkeypatch):
     assert resolve_keyword_tool("Поставь музыку, настроения нет") == "media"
     assert DEFAULT_REGISTRY.get("play_music") is not None
-    with patch("core.actions.media.webbrowser.open", return_value=True):
+    with patch("core.actions.media._open_target", return_value=True), patch(
+        "core.actions.media.duckduckgo_search",
+        return_value=[{"url": "https://www.youtube.com/watch?v=ambient"}],
+    ):
         result = execute_tool(DEFAULT_REGISTRY, "play_music", {
             "query": "ambient", "source": "youtube", "allow_network": True,
         }, ToolContext(settings=Settings()))

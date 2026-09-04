@@ -54,23 +54,34 @@ class PersonalityEngine:
             return "learning"
         return "work"
 
-    @staticmethod
-    def contextual_greeting(return_context: Any) -> str | None:
-        confidence = float(getattr(return_context, "confidence", 0.0) or 0.0)
-        evidence = tuple(getattr(return_context, "evidence", ()) or ())
-        message = " ".join(str(getattr(return_context, "message", "") or "").split())
+    def contextual_greeting(self_or_context: Any, return_context: Any = None) -> str | None:
+        if isinstance(self_or_context, PersonalityEngine):
+            ctx = return_context
+            addr = (self_or_context.profile.address or "").strip()
+        else:
+            ctx = self_or_context
+            try:
+                addr = (PersonalityEngine().profile.address or "").strip()
+            except Exception:
+                addr = ""
+        confidence = float(getattr(ctx, "confidence", 0.0) or 0.0)
+        evidence = tuple(getattr(ctx, "evidence", ()) or ())
+        message = " ".join(str(getattr(ctx, "message", "") or "").split())
         if confidence < 0.7 or not evidence or not message:
             return None
+        prefix = f"{addr.capitalize()}, " if addr else ""
         sprint11 = re.match(r"(?i)^продолжим\s+(.+?)\?\s*остановились\s+на\s+.+", message)
         if sprint11:
             subject = sprint11.group(1).strip(" .?!")
-            return f"Сэр, продолжим {subject}?"
+            res = f"{prefix}продолжим {subject}?"
+            return res[0].upper() + res[1:]
         task = re.sub(r"(?i)^вы\s+остановились\s+на\s+", "", message).strip(" .?!")
         words = task.split()
         if words and re.search(r"(?i)(ке|те)$", words[0]):
             words[0] = words[0][:-1] + "у"
         task = " ".join(words)
-        return f"Сэр, продолжим: {task}?" if task else "Сэр, продолжим прошлую задачу?"
+        res = f"{prefix}продолжим: {task}?" if task else f"{prefix}продолжим прошлую задачу?"
+        return res[0].upper() + res[1:]
 
     def prompt_fragment(self, style: StyleProfile,
                         memories: Iterable[str] = ()) -> str:
@@ -95,8 +106,10 @@ class PersonalityEngine:
         if not generic:
             return value
         if verified:
-            addr = self.profile.address or "сэр"
-            return f"Готово, {addr}. Проверил результат — всё применилось."
+            addr = (self.profile.address or "").strip()
+            if addr:
+                return f"Готово, {addr}. Проверил результат — всё применилось."
+            return "Готово. Проверил результат — всё применилось."
         return "Результат пока не подтверждён проверкой."
 
     @staticmethod

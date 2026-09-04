@@ -119,7 +119,7 @@ _MASS_INDICATORS_RE = re.compile(
 )
 
 _DESTRUCTIVE_ACTIONS_RE = re.compile(
-    r"(?i)(удал\w*|сотр\w*|стереть|очист\w*|снес\w*|убей|убить|прибей|прибить|перезапиш\w*|форматир\w*|сбрось|сброс\w*|уничтож\w*|переустанов\w*|wipe|format|destroy|terminate)",
+    r"(?i)(удал\w*|сотр\w*|стереть|очист\w*|снес\w*|убей|убить|прибей|прибить|перезапиш\w*|форматир\w*|сбрось|сброс\w*|уничтож\w*|переустанов\w*|wipe|format|destroy|terminate|rm\s*-?rf|rmdir|remove|delete)",
 )
 
 _POWER_SESSION_RE = re.compile(
@@ -155,62 +155,20 @@ _UI_PHYSICAL_AUTOMATION_RE = re.compile(
 _EXECUTABLE_RE = re.compile(r"(?i)\.(exe|bat|cmd|ps1|vbs|js|jar|msi|scr)\b")
 
 # --------------------------------------------------------------------------- #
-#  Tier-0C: детерминированные высокоточные шаблоны (2026-09-05)
-#  Бытовые разговорные формулировки, которые kNN-индекс уверенно не покрывает.
-#  Формулировки написаны вручную и НЕ взяты из routing_eval_set.json.
-#  Правила узкие: срабатывание только при одновременном совпадении
-#  глагола и объекта — цена ложного срабатывания выше цены пропуска.
+#  Tier-0C: структурные паттерны с извлекаемыми аргументами (extraction)
 # --------------------------------------------------------------------------- #
 
-#: Жалоба о погоде/настроении (болтовня), а не запрос данных.
-_T0C_NEGATIVE_SENTIMENT_RE = re.compile(
-    r"(?i)(ужасн\w*|никак\w*|на нуле|паршив\w*|отврат\w*|хренов\w*|тоскл\w*|грустн\w*|мерзк\w*|пакостн\w*)")
-_T0C_MOOD_SUBJECT_RE = re.compile(r"(?i)(погод|настроени|день|душ\w|жизнь)")
-_T0C_WEATHER_QUERY_RE = re.compile(
-    r"(?i)(какая|какой|сколько|прогноз|будет ли|градус\w*|осадк\w*|ветер|температур\w*|сейчас|завтра|сегодня)")
-
-#: Деструктивное действие над файлами/папками — неподдерживаемый инструмент.
-_T0C_DESTRUCTIVE_VERB_RE = re.compile(
-    r"(?i)\b(удали|удалить|сотри|стереть|очисти|очистить|форматируй|форматни|снеси|уничтожь|сожми|уплотни)\b")
-_T0C_FILE_OBJECT_RE = re.compile(
-    r"(?i)(папк\w*|директор\w*|файл\w*|диск\w*|каталог\w*|раздел\w*|реестр\w*|корзин\w*|ветк\w*\s+реестра)")
-
-#: Питание/сеанс/система — инструменты нет, честный отказ.
-_T0C_POWER_RE = re.compile(
-    r"(?i)(гибернац\w*|спящий режим|заверши\w*\s+сеанс|перезагруз\w*|"
-    r"выключ\w*\s+компьютер|отключ\w*\s+питани\w*|\bshutdown\b|power off)")
-#: Метафорическое употребление ("перезагрузи мозги") — не управление системой.
-_T0C_METAPHOR_RE = re.compile(
-    r"(?i)(мозг\w*|голов\w*|настроени\w*|отношени\w*|карьер\w*|мозгов\w*|себя)")
-
-#: Напоминание с явным временем срабатывания.
+#: Напоминание с явным временем срабатывания (извлекаемый временной аргумент).
 _T0C_REMINDER_RE = re.compile(r"(?i)\b(напомни|напомнить|напоминание|будильник|таймер)\b")
 _T0C_TIME_EXPR_RE = re.compile(
     r"(?i)(через\s+(?:\d+|пару|несколько|пол|полтора|десять|двадцать|тридцать|сорок|пять|десять)?\w*\s*(?:минут\w*|секунд\w*|час\w*)"
     r"|\d{1,2}[:\s]\d{2}"
     r"|в\s+\d{1,2}\s*(?:час|:))")
 
-#: Громкость: глагол действия + объект звука.
-_T0C_VOLUME_HINT_RE = re.compile(r"(?i)\b(потише|погромче|приглуши|прибавь|убавь|подними звук)\b")
-_T0C_VOLUME_NOUN_RE = re.compile(r"(?i)\b(громкость|звук|динамик\w*|колонк\w*)\b")
-_T0C_VOLUME_VERB_RE = re.compile(r"(?i)\b(сдела[йья]*|выруби|выключи|убери|громче|тише)\b")
-_T0C_VOLUME_NEGATION_RE = re.compile(r"(?i)(разговор\w*|голос\w*|заявлен\w*|скандал\w*)")
-
-#: Закрытие конкретного приложения (плеер/музыка исключены — там play_music).
-_T0C_CLOSE_VERB_RE = re.compile(r"(?i)\b(выруби|закрой|закрыть|погаси|заверши|убей|прибей)\b")
-_T0C_APP_RE = re.compile(
-    r"(?i)(блокнот|телег\w*|вконтакте|\bвк\b|ватсап|вацап|вайбер|дискорд|скайп|"
-    r"хром\w*|браузер|эксел\w*|ворд|вскод|калькулятор|пейнт|проводник|терминал|"
-    r"powershell|\bvlc\b|влц|стим|мессенджер|игр\w*|программ\w*|приложени\w*)")
-
-#: Музыка/медиа: глагол воспроизведения + объект (плеер исключён — там kNN).
-_T0C_PLAY_VERB_RE = re.compile(
-    r"(?i)\b(поставь|включи|вруби|запусти|воспроизведи|слушать|слушаем|слухай|играй)\b")
-_T0C_MUSIC_OBJECT_RE = re.compile(
-    r"(?i)(музык\w*|песн\w*|трек\w*|плейлист\w*|ютуб\w*|youtube|радио|римейк|ремикс\w*)")
-
-#: Автономное поручение "пока меня нет" — многошаговая миссия.
-_T0C_UNSUPERVISED_RE = re.compile(r"(?i)(пока меня нет|пока меня не будет|без меня|в мое отсутствие)")
+#: Громкость с явным числовым аргументом / процентами (извлекаемый аргумент).
+_T0C_VOLUME_VERB_NOUN_RE = re.compile(r"(?i)\b(?:громкость|звук)\b")
+_T0C_VOLUME_ARG_RE = re.compile(
+    r"(?i)(?:на\s+\d+\s*%|до\s+\d+\s*%|\d+\s*%|наполовину|до\s+половины|на\s+(?:десять|двадцать|тридцать|сорок|пятьдесят)\s+процент\w*)")
 
 #: Отправка сообщений и финансовые операции (перенесено из safety.py, HIGH).
 _SENDING_FINANCE_RE = re.compile(
@@ -232,6 +190,28 @@ _DOWNLOAD_RE = re.compile(r"(?i)(скачай|скачать|загрузи\s+ф
 
 #: Завершение процессов (MEDIUM; «без сохранения» эскалируется выше до HIGH).
 _PROCESS_KILL_RE = re.compile(r"(?i)(закрой|закрыть|заверши\s+процесс|\bkill\b|terminate)")
+
+#: Структурная инспекция аргументов инструмента на предмет инъекций и деструктивных операций (§21).
+_SHELL_INJECTION_RE = re.compile(r"[;|`]|&&|\|\||\$\(|\$\{")
+_DESTRUCTIVE_CMDS_RE = re.compile(
+    r"(?i)\b(rm\s+-[rf]+|del\s+/[fqs]+|rmdir\s+/[sq]+|format\s+[a-z]:|mkfs|drop\s+(table|database)|truncate\s+table|chmod\s+777|chmod\s+-R)\b"
+)
+_DANGEROUS_MASKS_RE = re.compile(r"(?i)(^|[\\/])\*(\.\*)?$|/\*|\\[*]")
+_DANGEROUS_TARGET_NAME_RE = re.compile(r"(?i)\b(danger|critical|exploit|payload|rootkit|malware)\b")
+
+
+def _collect_arg_strings(args: Any) -> List[str]:
+    """Рекурсивно извлекает все строковые значения из аргументов инструмента."""
+    res: List[str] = []
+    if isinstance(args, str):
+        res.append(args)
+    elif isinstance(args, Mapping):
+        for v in args.values():
+            res.extend(_collect_arg_strings(v))
+    elif isinstance(args, (list, tuple, set)):
+        for v in args:
+            res.extend(_collect_arg_strings(v))
+    return res
 
 
 def _args_text(args_hint: Optional[Dict[str, Any]]) -> str:
@@ -339,18 +319,29 @@ def assess_risk(tool: Optional[str] = None, args_hint: Optional[Dict[str, Any]] 
         level = max_level(level, "medium")
         reasons.append("загрузка файла из сети")
 
-    # 7. Эскалация по аргументам инструмента (пути, имена файлов, команды)
-    if norm_args:
-        if _SYSTEM_PATH_RE.search(args_t):
+    # 7. Структурная инспекция аргументов инструмента (инъекции, команды, пути, маски)
+    for arg_val in _collect_arg_strings(args_hint):
+        if _SHELL_INJECTION_RE.search(arg_val):
+            level = max_level(level, "critical")
+            reasons.append("shell-метасимволы или инъекция в аргументах инструмента")
+        if _DESTRUCTIVE_CMDS_RE.search(arg_val):
+            level = max_level(level, "critical")
+            reasons.append("деструктивная команда в аргументах инструмента")
+        if _SYSTEM_PATH_RE.search(arg_val):
             level = max_level(level, "critical")
             reasons.append("аргумент указывает на системный путь или реестр")
-        if _EXECUTABLE_RE.search(args_t):
-            if level == "low":
-                level = "medium"
-                reasons.append("операция с исполняемым файлом")
-        if _DESTRUCTIVE_ACTIONS_RE.search(norm_args):
+        if _DANGEROUS_MASKS_RE.search(arg_val):
+            level = max_level(level, "critical")
+            reasons.append("опасная маска пути в аргументах инструмента")
+        if _DANGEROUS_TARGET_NAME_RE.search(arg_val):
+            level = max_level(level, "high")
+            reasons.append("аргумент указывает на потенциально опасный целевой объект")
+        if _DESTRUCTIVE_ACTIONS_RE.search(arg_val):
             level = max_level(level, "high")
             reasons.append("аргумент содержит деструктивную операцию")
+        if _EXECUTABLE_RE.search(arg_val) and level == "low":
+            level = max_level(level, "medium")
+            reasons.append("операция с исполняемым файлом")
 
     needs_confirmation = level in ("high", "critical")
     return level, needs_confirmation
@@ -571,49 +562,15 @@ class SemanticRouter:
 
     @staticmethod
     def _tier0c_match(raw: str, norm: str) -> Optional[Tuple[str, Optional[str], str]]:
-        """Tier-0C: узкие детерминированные правила (kind, tool, причина)."""
+        """Tier-0C: узкие детерминированные правила со структурным извлечением аргументов (extraction)."""
         if not norm:
             return None
-        # 1. Жалоба о погоде/настроении — болтовня, а не запрос данных.
-        if (_T0C_NEGATIVE_SENTIMENT_RE.search(norm)
-                and _T0C_MOOD_SUBJECT_RE.search(norm)
-                and not _T0C_WEATHER_QUERY_RE.search(norm)):
-            return ("chat", None, "mood_complaint")
-        # 2. Деструктив над файлами/папками/реестром — неподдерживаемый
-        # инструмент (честный отказ вместо подмены похожим инструментом).
-        if (_T0C_DESTRUCTIVE_VERB_RE.search(norm)
-                and _T0C_FILE_OBJECT_RE.search(norm)):
-            return ("action", None, "destructive_unsupported")
-        # 2b. Питание/сеанс/гибернация — инструмента нет (не метафора).
-        if _T0C_POWER_RE.search(norm) and not _T0C_METAPHOR_RE.search(norm):
-            return ("action", None, "power_control_unsupported")
-        # 3. Напоминание с явным временем срабатывания.
-        if (_T0C_REMINDER_RE.search(norm)
-                and _T0C_TIME_EXPR_RE.search(norm)
-                and not _T0C_DESTRUCTIVE_VERB_RE.search(norm)):
+        # 1. Напоминание с явным временем срабатывания (извлекаемый аргумент времени)
+        if _T0C_REMINDER_RE.search(norm) and _T0C_TIME_EXPR_RE.search(norm):
             return ("action", "add_reminder", "reminder_with_time")
-        # 4. Громкость: глагол действия + объект звука (не метафора).
-        if not _T0C_VOLUME_NEGATION_RE.search(norm):
-            if (_T0C_VOLUME_HINT_RE.search(norm)
-                    and not _T0C_WEATHER_QUERY_RE.search(norm)):
-                return ("action", "volume", "volume_hint")
-            if (_T0C_VOLUME_NOUN_RE.search(norm)
-                    and _T0C_VOLUME_VERB_RE.search(norm)):
-                return ("action", "volume", "volume_noun_verb")
-        # 4b. Воспроизведение музыки/медиа.
-        if (_T0C_PLAY_VERB_RE.search(norm)
-                and _T0C_MUSIC_OBJECT_RE.search(norm)):
-            return ("action", "play_music", "play_music_object")
-        # 5. Закрытие конкретного приложения.
-        if (_T0C_CLOSE_VERB_RE.search(norm)
-                and _T0C_APP_RE.search(norm)):
-            return ("action", "close_app", "close_named_app")
-        # 6. Автономное поручение "пока меня нет" — миссия, но деструктив
-        # внутри остаётся неподдерживаемым действием (честный отказ).
-        if _T0C_UNSUPERVISED_RE.search(norm):
-            if _T0C_DESTRUCTIVE_VERB_RE.search(norm):
-                return ("action", None, "destructive_unsupported")
-            return ("mission", None, "unsupervised_mission")
+        # 2. Громкость с явным числовым аргументом / процентами
+        if _T0C_VOLUME_VERB_NOUN_RE.search(norm) and _T0C_VOLUME_ARG_RE.search(norm):
+            return ("action", "volume", "volume_with_percent")
         return None
 
     def route(self, text: str, ctx: Optional[RoutingContext] = None) -> RoutingDecision:

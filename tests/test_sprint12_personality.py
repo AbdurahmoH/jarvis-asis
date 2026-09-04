@@ -106,6 +106,14 @@ def test_natural_completion_requires_verified_success():
     assert "Готово" not in unverified
 
 
+def test_natural_completion_empty_address_omits_address(tmp_path):
+    p_path = tmp_path / "personality.json"
+    p_path.write_text(json.dumps({"name": "ATLAS", "address": ""}), encoding="utf-8")
+    engine = PersonalityEngine(personality_path=p_path)
+    verified = engine.naturalize("Task completed successfully.", verified=True, task_type="work")
+    assert verified == "Готово. Проверил результат — всё применилось."
+
+
 def test_prompt_fragment_is_compact_and_contains_structured_policy():
     engine = PersonalityEngine()
     style = engine.style_for(task_type="report", urgency="normal")

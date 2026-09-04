@@ -182,6 +182,7 @@ class Orchestrator:
         self._natural_missions = NaturalMissionCoordinator(
             self._runtime, self._authority,
             NaturalMissionInterpreter(
+                clock=lambda: self._runtime._clock(),
                 integrations=self._configured_integrations(),
                 structured_backend=(
                     self._semantic_brain_interpret
@@ -224,6 +225,7 @@ class Orchestrator:
 
         # Reminders
         self._task_manager = get_default_manager()
+        self._task_manager.set_runtime(self._runtime)
 
         # Proactive
         self._proactor = Proactor(
@@ -956,14 +958,30 @@ class Orchestrator:
                     log.debug("Clarify base decision восстановить не удалось: %s", exc)
                     base = None
                 if base is not None:
-                    text = str(pending.get("original") or _reply or text)
+                    orig = str(pending.get("original") or "").strip()
+                    if orig and _reply:
+                        text = f"{_reply} {orig}"
+                    else:
+                        text = orig or _reply or text
                     self._route_memo = (text, self._decision_for_candidate(base, cid))
 
-        # Understanding Layer: классифицируем ОДИН раз сразу после старта —
-        # результат переиспользуют и reflex, и быстрый ответ, и выбор
-        # «синхронно vs фон» ниже (раньше это делали три рассогласованных
-        # классификатора — баги A2/A4).
+        # Single Source of Truth: единый семантический роутер
+        decision = self._route_cached(text)
+        pre_intent = semantic_intent_category(decision)
+        self._emit_route_event(decision, self._llm_available_cached())
+
+        # Understanding Layer: структура понимания читает решение единого роутера
         understanding = self._understanding.understand(text, channel=channel)
+        if decision.kind == "mission":
+            understanding.route = Route.MISSION
+        elif decision.kind == "question":
+            understanding.route = Route.QUICK_ANSWER
+        elif decision.kind == "chat":
+            understanding.route = Route.REFLEX
+        elif decision.kind == "clarify":
+            understanding.route = Route.CLARIFY
+        elif decision.kind in ("action", "fresh_data"):
+            understanding.route = Route.ACTION
 
         # P2C: one structured semantic pass. Only long-lived/control modes are
         # consumed here; ordinary conversation and immediate actions continue
@@ -996,12 +1014,6 @@ class Orchestrator:
         # stale mission (for example, "Системный статус" after "Открой
         # блокнот"). Conversation and voice addressing still use the
         # cognitive layer; explicit actions never pay that ambiguity tax.
-        # Единая точка решения (2026-09-05): semantic_route вместо
-        # resolve_keyword_tool — intent_category(decision) это тонкий
-        # адаптер, текст здесь НЕ переклассифицируется.
-        decision = self._route_cached(text)
-        pre_intent = semantic_intent_category(decision)
-        self._emit_route_event(decision, self._llm_available_cached())
 
         # Шаг 4: clarify как продуктовое поведение. semantic-уточнение
         # уходит обычным assistant_output (НЕ confirmation_required),
@@ -1044,7 +1056,18 @@ class Orchestrator:
             text = cognitive_turn.goal
             decision = self._route_cached(text)
             pre_intent = semantic_intent_category(decision)
+            self._emit_route_event(decision, self._llm_available_cached())
             understanding = self._understanding.understand(text, channel=channel)
+            if decision.kind == "mission":
+                understanding.route = Route.MISSION
+            elif decision.kind == "question":
+                understanding.route = Route.QUICK_ANSWER
+            elif decision.kind == "chat":
+                understanding.route = Route.REFLEX
+            elif decision.kind == "clarify":
+                understanding.route = Route.CLARIFY
+            elif decision.kind in ("action", "fresh_data"):
+                understanding.route = Route.ACTION
 
         # Sprint 11: natural queries are answered from evidence-backed local
         # structured context. Action intents skip retrieval entirely: loading
@@ -1203,6 +1226,7 @@ class Orchestrator:
         state["tts_text"] = spoken
         state["assistant_output"] = output.to_dict()
         state["tool"] = outcome.tool_used or ""
+        state["tool_used"] = outcome.tool_used or ""
         state["verified"] = bool(outcome.verified)
         state["mode"] = outcome.mode
         state["route"] = understanding.route.value

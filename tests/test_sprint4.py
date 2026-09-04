@@ -125,7 +125,7 @@ def test_tool_prompts_include_required_brain_context(settings, fake_backend, tmp
     settings.paths.profile_dir = str(tmp_path)
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
     _talk(agent, "меня зовут Абду")
-    _talk(agent, "покажи файлы")  # action path
+    _talk(agent, "скопируй файл notes.txt в backup.txt")  # action path
 
     plan_call = next(c for c in fake_backend.calls
                      if "Цель пользователя:" in str(c["messages"][-1]["content"]))
@@ -193,7 +193,7 @@ def test_persona_planner_focus(settings, fake_backend, tmp_path):
     """System prompt планировщика: persona + фокус на JSON, без фактов."""
     settings.paths.profile_dir = str(tmp_path)
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
-    _talk(agent, "покажи файлы")
+    _talk(agent, "скопируй файл notes.txt в backup.txt")
 
     plan_call = next(c for c in fake_backend.calls
                      if "Цель пользователя:" in str(c["messages"][-1]["content"]))

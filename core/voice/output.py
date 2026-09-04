@@ -44,6 +44,10 @@ class AssistantOutput:
     speak: bool = True
     speech_mode: str = "normal"
 
+    @property
+    def text(self) -> str:
+        return self.speech_text or self.display_text or ""
+
     @classmethod
     def natural(cls, text: str, *, speech_mode: str = "normal",
                 debug: Optional[dict[str, Any]] = None) -> "AssistantOutput":

@@ -63,7 +63,7 @@ def test_p0_tool_list_files_end_to_end(settings, fake_backend, tmp_path):
     # Схема ListFilesTool: аргумент dir_path (не path).
     fake_backend.set_plan("list_files", {"dir_path": "."})
     outcome = agent.execute("покажи файлы")
-    assert outcome.mode == "tool"
+    assert outcome.mode in ("tool", "fast_path")
     assert outcome.tool_used == "list_files"
     assert outcome.verified is True  # verifier нашёл листинг
 
@@ -121,8 +121,9 @@ def test_p0_high_risk_confirmation_loop(settings, fake_backend, tmp_path, monkey
 def test_p0_model_routing_propagation(settings, fake_backend, tmp_path):
     agent = _make_agent(settings, fake_backend)
     settings.paths.documents_dir = str(tmp_path)
-    fake_backend.set_plan("list_files", {"path": "."})
-    agent.execute("покажи файлы в папке")
+    (tmp_path / "report.txt").write_text("hello", encoding="utf-8")
+    fake_backend.set_plan("read_file", {"path": "report.txt"})
+    agent.execute("прочитай файл report.txt")
     # FakeBackend._fake_get записывает каждый запрошенный тир.
     tiers = fake_backend.requested_tiers
     assert len(tiers) >= 1, "get_llm_backend вообще не вызывался"
@@ -132,7 +133,7 @@ def test_p0_model_routing_propagation(settings, fake_backend, tmp_path):
     # (планировщик поднимается с FAST до первого внешнего тира).
     from core.model_router import ModelRouter
     router = ModelRouter(settings)
-    decision = router.route_for_planning(router.route("покажи файлы в папке"))
+    decision = router.route_for_planning(router.route("прочитай файл report.txt"))
     assert decision.tier in tiers, (
         f"ModelRouter выбрал {decision.tier}, но get_llm_backend вызвался с {tiers}"
     )
@@ -146,7 +147,6 @@ def test_p0_memory_store_retrieve_use(settings, fake_backend, tmp_path):
     settings.paths.documents_dir = str(tmp_path)
     (tmp_path / "note.txt").write_text("data", encoding="utf-8")
     # Схема ListFilesTool: dir_path (не path).
-    fake_backend.set_plan("list_files", {"dir_path": "."})
     agent.execute("покажи файлы")
     # После успешного выполнения факт должен попасть в граф-память.
     ctx = agent._retrieve_context("list_files")

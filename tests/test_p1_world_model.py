@@ -135,32 +135,9 @@ def test_provenance_distinguishes_observed_memory_inference_and_user_report(tmp_
 
 
 def test_natural_storage_query_uses_local_perception_without_action_planning(settings, monkeypatch):
-    class Observer:
-        def observe(self, domain: str, **kwargs):
-            assert domain == "storage"
-            return DomainObservation(
-                domain="storage",
-                source="fixture_windows",
-                ttl_seconds=15,
-                data={
-                    "volumes": [
-                        {
-                            "device": "FIXTURE:",
-                            "mountpoint": "FIXTURE:\\",
-                            "fstype": "NTFS",
-                            "total_bytes": 1000,
-                            "used_bytes": 400,
-                            "free_bytes": 600,
-                            "used_percent": 40.0,
-                            "removable": False,
-                        }
-                    ]
-                },
-            )
-
+    """Детерминированный ответ на запрос состояния дисков через system_status без LLM (§3, Вариант А)."""
     settings.deepseek_brain_mode = True
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
-    agent._executive.world.observer = Observer()
     monkeypatch.setattr(
         agent,
         "_discover_capabilities",
@@ -174,11 +151,11 @@ def test_natural_storage_query_uses_local_perception_without_action_planning(set
 
     outcome = agent.execute("сколько свободного места на дисках?")
 
-    assert outcome.mode == "perception"
+    assert outcome.mode == "fast_path"
     assert outcome.verified is True
-    assert outcome.tool_used == "world_observe:storage"
-    assert "600" in outcome.text
-    assert outcome.action_result.output["observations"][0]["fact_type"] == "observed"
+    assert outcome.tool_used == "system_status"
+    assert "свободно" in outcome.text.lower()
+    assert "диск" in outcome.text.lower()
 
 
 def test_observation_failure_is_structured_and_never_invented(tmp_path):

@@ -9,6 +9,8 @@ from core.agent import Agent, AgentConfig
 def test_common_conversation_calls_local_model(settings, fake_backend):
     settings.offline_mode = True
     settings.source_path = Path(__file__).resolve().parents[1] / "config" / "settings.json"
+    from core.routing.semantic_router import get_router
+    get_router().warmup()
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
     started = time.perf_counter()
     outcome = agent.execute("как дела?")

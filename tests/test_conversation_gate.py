@@ -99,7 +99,7 @@ def test_conversation_direct_answer_without_tools(fake_backend, settings, goal):
 
 
 @pytest.mark.parametrize("goal", [
-    "Какие файлы есть в documents?",
+    "Скопируй файл notes.txt в backup.txt",
     "Открой файл notes.txt",
 ])
 def test_action_uses_planner_with_tools(fake_backend, settings, goal, tmp_path):

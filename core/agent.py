@@ -668,6 +668,10 @@ class Agent:
         """Attach the canonical runtime used by durable action primitives."""
         self._task_runtime = runtime
 
+    def _user_address(self) -> str:
+        """Возвращает обращение из профиля/персоны (пусто, если не задано)."""
+        return (getattr(getattr(self._settings, "persona", None), "address", "") or "").strip()
+
     def attach_authority(self, authority: Any) -> None:
         """Attach the canonical deterministic delegated-authority boundary."""
         self._authority = authority
@@ -885,7 +889,10 @@ class Agent:
         cancel = cancel or threading.Event()
         goal = (goal or "").strip()
         if not goal:
-            return AgentOutcome(text="Сэр, я не расслышал команду.", mode="empty")
+            addr = self._user_address()
+            prefix = f"{addr}, " if addr else ""
+            msg = f"{prefix}я не расслышал команду." if prefix else "Я не расслышал команду."
+            return AgentOutcome(text=msg, mode="empty")
 
         trace: List[str] = []
 
@@ -936,11 +943,6 @@ class Agent:
                 trace=trace,
             )
 
-        # ---- 2c. PERCEPTION: только для вопросов о текущем состоянии ----
-        if decision.kind == "question":
-            perception = self._try_world_perception(goal, mission, cancel, risk, trace)
-            if perception is not None:
-                return perception
         fresh = self._try_fresh_information(goal, mission, cancel, risk, trace, decision)
         if fresh is not None:
             return fresh
@@ -959,7 +961,7 @@ class Agent:
         # Explicit independent clauses become a verified batch.  This keeps
         # a planner from silently completing only the first half of a request.
         compound = split_compound_commands(goal)
-        if compound and not risk.needs_confirmation:
+        if compound:
             trace.append(f"compound batch -> {len(compound)} clauses")
             if mission is not None:
                 mission.metadata["compound_commands"] = list(compound)
@@ -997,10 +999,11 @@ class Agent:
 
         # ---- 5. MODE + ROUTING (§15) ----
         routing = self._model_router.route(goal, context_tokens=context_tokens)
-        trace.append(f"route -> {routing.tier.value} ({routing.reason})")
-        if mission is not None:
-            mission.model_used = routing.tier.value
-            mission.metadata["routing"] = routing.to_dict()
+        if routing is not None:
+            trace.append(f"route -> {routing.tier.value} ({routing.reason})")
+            if mission is not None:
+                mission.model_used = routing.tier.value
+                mission.metadata["routing"] = routing.to_dict()
 
         # ---- 5b. FAST PATH before memory/model work ----
         # Local system/app/media commands do not need Chroma initialization or
@@ -1025,16 +1028,16 @@ class Agent:
         # инструментов и НЕ генерирует JSON-план. Настоящие действия идут мимо
         # гейта в planner ниже. (2026-09-05: classify_conversation удалён —
         # гейт читает decision.kind.)
-        if decision.kind == "chat":
-            trace.append("conversation gate: routing kind=chat")
+        if decision.kind in ("chat", "question") and decision.tool is None:
+            trace.append(f"conversation gate: routing kind={decision.kind}")
             if mission is not None:
-                mission.metadata["conversation_gate"] = "routing kind=chat"
+                mission.metadata["conversation_gate"] = f"routing kind={decision.kind}"
             return self._answer_conversation(
                 goal, mission, cancel, trace, routing, memory_ctx,
             )
 
         # ---- 7. RESEARCH MODE (§18): явное исследование ----
-        if decision.tool == "web_search" and not self.deepseek_brain_mode:
+        if decision.kind == "mission" and not self.deepseek_brain_mode:
             trace.append("режим: research workflow")
             return self._handle_research(goal, mission, cancel, trace)
 
@@ -1275,13 +1278,14 @@ class Agent:
                 and not self._config.auto_confirm_high_risk):
             trace.append(f"HIGH risk -> требуется подтверждение: {exec_risk.reasons}")
             conf_id = uuid.uuid4().hex
+            prompt_text = exec_risk.confirmation_prompt(self._user_address())
             if mission is not None:
                 mission.emit(EVENT_CONFIRMATION_REQUIRED, payload={
                     "confirmation_id": conf_id,
                     "tool": decision.tool,
                     "arguments": decision.arguments,
                     "risk": exec_risk.to_dict(),
-                    "prompt": exec_risk.confirmation_prompt(),
+                    "prompt": prompt_text,
                 })
                 mission.set_status(MissionStatus.PAUSED, "ожидание подтверждения пользователя")
             # Регистрируем ожидающее подтверждение, чтобы позже можно
@@ -1309,7 +1313,7 @@ class Agent:
             # за confirmation_timeout_sec — безопасный авто-reject (отказ).
             self._start_confirmation_watchdog(conf_id)
             return AgentOutcome(
-                text=exec_risk.confirmation_prompt(),
+                text=prompt_text,
                 verified=False,
                 needs_confirmation=True,
                 confirmation_id=conf_id,
@@ -1729,6 +1733,8 @@ class Agent:
             outcome = self._execute_core(
                 part, mission=None, cancel=cancel, decision=part_decision,
             )
+            if outcome.needs_confirmation:
+                return outcome
             outcomes.append(outcome)
             trace.extend(f"compound[{index}] {item}" for item in outcome.trace[-8:])
 
@@ -2189,6 +2195,9 @@ class Agent:
                                  top: List[str]) -> None:
         """Backlog продукта: неподдерживаемые запросы в jsonl (без секретов)."""
         try:
+            import json
+            from datetime import datetime, timezone
+            from pathlib import Path
             from core.redact import redact_secrets
             from config.settings import Settings
 
@@ -2196,7 +2205,7 @@ class Agent:
             log_dir = data_dir / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             entry = {
-                "ts": datetime.now().isoformat(timespec="seconds"),
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "text": str(redact_secrets(goal))[:300],
                 "top_candidates": list(top),
                 "risk": decision.risk,
@@ -3548,6 +3557,15 @@ class Agent:
         # ---- RESULT ----
         if mission is not None:
             mission.set_progress(1.0, "готово")
+        # P0-5: сохраняем успешный факт в локальную память (store/use).
+        if verification.verified:
+            try:
+                self._store_fact(
+                    label=f"выполнено: {tool}",
+                    detail=f"{goal} -> {str(result.output)[:300]}",
+                )
+            except Exception as exc:
+                log.debug("store_fact не удался: %s", exc)
         if not finalize_response:
             return AgentOutcome(
                 text="",
@@ -3589,15 +3607,6 @@ class Agent:
                 if mission is not None:
                     mission.metadata["finalizer_dropped_fact"] = True
                 text = render_structured_fact(result.output)
-        # P0-5: сохраняем успешный факт в локальную память (store/use).
-        if verification.verified:
-            try:
-                self._store_fact(
-                    label=f"выполнено: {tool}",
-                    detail=f"{goal} -> {str(result.output)[:300]}",
-                )
-            except Exception as exc:
-                log.debug("store_fact не удался: %s", exc)
         return AgentOutcome(
             text=text,
             verified=verification.verified,
@@ -3809,14 +3818,19 @@ class Agent:
 
         if tool == "system_status":
             if isinstance(result.output, Mapping):
+                summary = result.output.get("summary")
+                if summary:
+                    return str(summary)
                 cpu = result.output.get("cpu_percent")
                 ram = result.output.get("ram")
-                ram_used = ram.get("used_percent") if isinstance(ram, Mapping) else None
+                disk = result.output.get("disk")
                 parts = []
                 if cpu is not None:
                     parts.append(f"ЦП: {cpu}%")
-                if ram_used is not None:
-                    parts.append(f"ОЗУ: {ram_used}%")
+                if isinstance(ram, Mapping) and ram.get("used_percent") is not None:
+                    parts.append(f"ОЗУ: {ram.get('used_percent')}%")
+                if isinstance(disk, Mapping) and disk.get("free_gb") is not None:
+                    parts.append(f"Диск {disk.get('path', '')}: {disk.get('free_gb')} ГБ свободно")
                 if parts:
                     return f"Статус системы: {', '.join(parts)}."
             return "Статус системы проверен."
@@ -4132,8 +4146,15 @@ class Agent:
                 capability_report = capability_engine.execute(capability_plan, max_repairs=2)
                 trace.extend(f"capability: {item}" for item in capability_report.action_trace)
                 if capability_report.needs_confirmation:
+                    addr = self._user_address()
+                    prefix = f"{addr}, " if addr else ""
+                    msg = (
+                        f"{prefix}для следующего системного изменения требуется подтверждение."
+                        if prefix
+                        else "Для следующего системного изменения требуется подтверждение."
+                    )
                     return AgentOutcome(
-                        text="Сэр, для следующего системного изменения требуется подтверждение.",
+                        text=msg,
                         verified=False, needs_confirmation=True,
                         risk=assess_risk(goal), mode="confirmation_required", trace=trace,
                     )
