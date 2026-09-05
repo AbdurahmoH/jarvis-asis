@@ -47,6 +47,8 @@ def test_timeout_terminates_process_and_stops_post_timeout_writes(tmp_path) -> N
     after = path.stat().st_size if path.exists() else 0
     assert not result.ok
     assert result.terminated is True
+    # S4: процесс действительно убит — побочные эффекты локализованы.
+    assert result.side_effects_contained is True
     assert after == before
 
 

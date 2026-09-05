@@ -81,14 +81,25 @@ def test_browser_bridge_tool_keeps_playwright_on_one_worker_thread() -> None:
     assert bridge.thread_ids[0] != threading.get_ident()
 
 
-def test_browser_tools_use_web_timeout_budget() -> None:
+def test_browser_tools_use_browser_timeout_budget() -> None:
+    """S4: браузер и CUA — свой класс таймаута, не файловый и не веб.
+
+    Тест переписан в рамках S4 сознательно. Его смысл — «браузерные
+    инструменты не должны получать короткий файловый бюджет» — сохранён и
+    усилен: добавлен computer_screenshot (раньше он как раз падал в файловый
+    класс) и закреплено, что веб-класс остался ОТДЕЛЬНЫМ значением, то есть
+    бюджет браузера больше не выводится из соседнего класса.
+    """
     settings = Settings()
     settings.limits.tool_timeout_file_sec = 2.0
     settings.limits.tool_timeout_web_sec = 31.0
+    settings.limits.tool_timeout_browser_sec = 61.0
     context = ToolContext(settings=settings)
 
-    assert tool_timeout_for("browser_bridge", context) == 31.0
-    assert tool_timeout_for("browser_automation", context) == 31.0
+    assert tool_timeout_for("browser_bridge", context) == 61.0
+    assert tool_timeout_for("browser_automation", context) == 61.0
+    assert tool_timeout_for("computer_screenshot", context) == 61.0
+    assert tool_timeout_for("web_fetch", context) == 31.0
 
 
 def test_packaged_runtime_config_is_deepseek_and_silent() -> None:

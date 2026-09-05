@@ -1746,6 +1746,11 @@ class Orchestrator:
 
     def runtime_diagnostics(self) -> Dict[str, Any]:
         """Startup/model diagnostics for the Wave 0 verification report."""
+        # S4: счётчик утёкших исполнений (watchdog отдал управление, побочные
+        # эффекты не остановлены). Импорт локальный: core.orchestrator тянет
+        # core.actions уже на модульном уровне, а тут нужен именно модуль
+        # executor с его состоянием, а не реэкспорт.
+        from core.actions.executor import leaked_execution_stats
         return {
             "warmup": dict(self._warmup_diagnostics),
             "warmup_ready": self._warmup_ready.is_set(),
@@ -1753,6 +1758,7 @@ class Orchestrator:
             "provider": self.provider_status(),
             "kernel": {"ledger": str(self._kernel.root / "missions.db"),
                        "capabilities": len(self._kernel.capabilities.snapshot())},
+            "tools": leaked_execution_stats(),
             "budgets": {
                 "fast": {"p50_ms": 600.0, "p95_ms": 1000.0, "hard_max_ms": 1500.0},
                 "deliberate": {"first_progress_p95_ms": 2500.0, "p50_ms": 8000.0, "p95_ms": 15000.0},

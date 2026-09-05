@@ -13,7 +13,7 @@
 | S1 | `assess_risk`: понижение уровня, отсутствие `\b`-границ, отключение паспорта для `screen_capture` | **закрыт** | `tests/regressions/test_s1_risk_monotonicity.py` |
 | S2 | WS без аутентификации с двух сторон; `_origin_allowed` fail-open; токен в query string | **закрыт** | `tests/regressions/test_s2_ws_authentication.py` |
 | S3 | `screen_capture` разрешается клиентским флагом `permission` | **закрыт** | `tests/regressions/test_s3_screen_capture_authority.py` |
-| S4 | Автоповтор побочных инструментов; таймауты; утечка legacy-потоков | не начат | — |
+| S4 | Автоповтор побочных инструментов; таймауты; утечка legacy-потоков | **закрыт** | `tests/regressions/test_s4_executor_retry_and_leaks.py` |
 | S5 | `ambient_initiated` не озвучивается (`_speak` глотает `TypeError`) | не начат | — |
 | S6 | `read_file` обрезает до 1000 символов; `search_files` без отмены; `write_file` без лимита | не начат | — |
 | S7 | Shadow sandbox: denylist по имени обходится алиасом | не начат | — |
@@ -527,7 +527,252 @@ permission` в `core/ws_server.py` отсутствуют; `args.get("permission
 
 ---
 
-## Протокол прогонов (действует для всех пунктов)
+## S4 — executor: повтор только идемпотентным, классы таймаутов, учёт утечек
+
+Файлы: `core/actions/executor.py`, `core/capabilities.py`, `config/settings.py`,
+`core/orchestrator.py`, `core/research_gateway.py`.
+
+### Что было сломано (проверено на живом коде)
+
+1. **Дефолт `max_retries=2`** (`executor.py:169`, `execute_tool:219`) — три
+   попытки **любому** упавшему инструменту. Ошибка инструмента ≠ отсутствие
+   побочного эффекта: файл мог быть уже записан, клавиша уже нажата,
+   напоминание уже создано. Право на тройное исполнение имели `write_file`,
+   `file_copy`, `file_move`, `add_reminder`, `cancel_reminder`, `open_app`,
+   `close_app`, `volume`, `play_music`, `screen_capture`, `computer_*`,
+   `browser_*`.
+2. **Таймауты по остаточному принципу.** `computer_mouse`,
+   `computer_keyboard`, `computer_screenshot` не были ни в `_WEB_TOOLS`, ни в
+   `_SYSTEM_TOOLS` и падали в **файловый** класс — 10 с на физический ввод и
+   снятие экрана, то есть ложный таймаут на нормальной работе. `public_data`
+   (`internet_required=True`) — тоже 10 с. Браузерные инструменты делили 30 с
+   с `web_search`.
+3. **`_run_legacy:147`** — поток, проигнорировавший `cancel_event`, получал
+   `terminated=False`, `side_effects_contained=False` и **нигде не
+   учитывался**. Поток daemon: живёт до конца процесса и продолжает менять
+   мир. Ни счётчика, ни предупреждения в логе.
+4. **`_run_subprocess:110`** — если `terminate` и `taskkill` не сработали,
+   возвращался `terminated=False`, и живой ОС-процесс тоже нигде не
+   фиксировался. Это утечка хуже потоковой: её не остановит даже завершение
+   агента.
+
+### Как устроено теперь
+
+**Политика повторов.** `Capability` получил поле `idempotent: bool = False`.
+`idempotent=True` стоит ровно на десяти читающих инструментах из наряда:
+`current_time`, `system_status`, `list_files`, `read_file`, `search_files`,
+`weather`, `public_data`, `web_search`, `web_fetch`, `list_reminders`.
+Зажим `ToolExecutor._retry_budget` стоит **внутри `execute`**, на границе
+безопасности, а не у вызывающих: любой путь (agent, research_gateway,
+capability_engine, тест, будущий вызов) получает одну и ту же политику.
+Инструмент без паспорта считается неидемпотентным — неизвестный побочный
+эффект нельзя повторять «на всякий случай». Подавление логируется на `debug`,
+чтобы не шуметь на горячем пути. Ошибка не теряется: она возвращается
+вызывающему и уходит в repair-цикл, как и было.
+
+Дефолт `max_retries` у `ToolExecutor.execute` и `execute_tool` — **0**.
+`core/agent.py:3409` продолжает передавать `0 if web_tool else 2`: это
+*запрос*, который зажим либо пропускает (`read_file` → 3 попытки), либо
+обнуляет (`write_file` → 1). Так сохраняется требование наряда «`read_file`
+до 3 раз» без ослабления защиты.
+
+**Измеренное изменение числа попыток при ошибке инструмента:**
+
+| Инструменты | Было | Стало |
+|---|---|---|
+| `read_file`, `list_files`, `search_files`, `web_search`, `web_fetch`, `weather`, `public_data`, `current_time`, `system_status`, `list_reminders` | 3 | 3 |
+| `write_file`, `file_copy`, `file_move`, `list_files_recursive`, `add_reminder`, `cancel_reminder`, `open_app`, `close_app`, `volume`, `play_music`, `screen_capture`, `computer_mouse`, `computer_keyboard`, `computer_screenshot`, `browser_automation`, `browser_bridge` | 3 | **1** |
+
+**Классы таймаутов.** Порядок разрешения в `tool_timeout_for`:
+
+1. явный `Capability.timeout_sec` (новое поле, по умолчанию `None` у всех —
+   проверено);
+2. `_BROWSER_TOOLS` → `tool_timeout_browser_sec` (новое поле, 60 с);
+3. `_LLM_TOOLS` → `response_timeout_sec`;
+4. `_SYSTEM_TOOLS` → `tool_timeout_system_sec`;
+5. `_WEB_TOOLS` **или** `passport.internet_required` → `tool_timeout_web_sec`;
+6. иначе файловый → `tool_timeout_file_sec`.
+
+Живые значения на `Settings()`: browser/CUA 60 с, web 30 с, system 5 с,
+file 10 с. Числа «web 15 / system 10» из наряда положены **только как
+код-фолбэки** в `_TIMEOUT_CLASSES` — они срабатывают, если настройки нет или
+она непригодна (`None`, не число, `<= 0`). Живой `Settings` всегда выигрывает,
+поэтому производственные бюджеты web/system не изменились и
+`config/settings.json` (запрещён к правке, к тому же в `.gitignore`) не нужен.
+Непригодная настройка теперь даёт класс-дефолт, а не `max(0.1, timeout)` —
+раньше нуль в настройке означал watchdog на 0.1 с для всего класса.
+
+`_LLM_TOOLS` — **пустое** множество, и это проверенный факт, а не заготовка:
+ни один зарегистрированный инструмент не вызывает модель (`computer_use`
+работает через CUA-бэкенд ввода). Множество объявлено, чтобы такой инструмент
+не унаследовал бюджет соседнего класса, если появится. Наряд требовал «LLM
+tools из `settings.limits`» — требование выполнено объявлением класса, а не
+припиской фиктивных участников.
+
+`tool_timeout_browser_sec` добавлен в валидатор `_positive_timeout` в
+`config/settings.py`. Это обязательно: `LimitsConfig` наследует `_Section` с
+`extra="allow"`, и неперечисленное поле приняло бы 0 или отрицательное
+значение, которое дошло бы до `box.get(timeout=max(0.1, timeout_sec))`.
+
+**Реестр утечек.** Утечка — исполнение, где watchdog отдал управление, а
+побочные эффекты **не остановлены**. Семантика флагов стала однозначной:
+
+| Ветка | `terminated` | `side_effects_contained` | Учёт |
+|---|---|---|---|
+| legacy-поток остановился по `cancel_event` | `True` | `True` | нет |
+| legacy-поток проигнорировал `cancel_event` | `True` | `False` | **утечка** |
+| subprocess убит (`terminate`/`taskkill`) | `True` | `True` | нет |
+| subprocess жив после kill | `True` | `False` | **утечка** |
+
+`terminated` теперь значит «исполнение прервано watchdog'ом», а
+«действительно ли остановлено» несёт `side_effects_contained`. До правки эти
+два смысла были слиты в один флаг, из-за чего худший случай — живой поток —
+выглядел как «не прерывали». В продукте `terminated` не читает никто (только
+`ActionResult.to_dict`), единственный потребитель —
+`tests/test_hardening_executor.py:49`; там добавлена проверка
+`side_effects_contained is True`, то есть тест усилен, а не ослаблен.
+
+Учёт ключуется **на ветке таймаута**, а не на `side_effects_contained is
+False`. Это принципиально: `core/actions/media.py:83` отдаёт этот флаг `False`
+на **успешном** пути (`play_music` оставляет играющий процесс), и счётчик по
+флагу считал бы каждое удачное воспроизведение.
+
+Реализация в `core/actions/executor.py`: `threading.Lock` (несколько
+**вызывающих** потоков делят один executor — `core/agent.py:456`, запись делает
+вызывающий, не утёкший поток), `deque(maxlen=20)` для истории, монотонный
+счётчик за жизнь процесса, `log.warning` на каждую утечку. В payload
+диагностики кладутся **только имена аргументов**, не значения: payload уходит
+в `runtime_diagnostics` и сериализуется `json.dumps`
+(`scripts/_live_probe.py:223`), среди значений бывают несериализуемые объекты,
+а утёкший поток продолжает держать ссылку на тот же `dict` и может его менять.
+Значения (замаскированные `redact_args`) идут только в лог, под
+`try/except RuntimeError` на случай той же гонки.
+
+`Orchestrator.runtime_diagnostics()` получил ключ
+`"tools": {"leaked_executions": N, "recent": [...]}`. **`core/ws_server.py`
+сознательно не тронут:** он пробрасывает в UI только под-словарь `warmup`
+(`:350`, `:364`, `:500`), поэтому счётчик виден в логах, в
+`scripts/_live_probe.py` и `scripts/executive_mind_live_smoke.py`, но **не в
+интерфейсе**. Доведение до UI — правка протокола и фронтенда, это за рамками
+S4.
+
+### Решения, принятые сознательно
+
+* **Импорт паспортов — функционально-локальный** (`_passport`). Это не стиль, а
+  необходимость: `core/actions/__init__.py:22` импортирует `executor` **до**
+  строк 25–40, которые регистрируют инструменты, а `core/capabilities.py:36`
+  импортирует `core.actions.registry`. Модульный
+  `from core.capabilities import CAPABILITIES` здесь падает `ImportError`, а
+  `import core.capabilities` — что хуже — **молча** строит реестр паспортов на
+  пустом `DEFAULT_REGISTRY` и теряет четыре авто-паспорта (`screen_capture`,
+  `file_copy`, `file_move`, `list_files_recursive`). Оба режима разные, поэтому
+  оборачивать это в `try/except ImportError` нельзя — вторая форма исключения
+  не бросает. Прецедент в коде: `core/actions/screen_capture.py:19-21,34`.
+  На этот случай в тесте стоит tripwire в свежем интерпретаторе.
+* **Отсутствие паспорта деградирует безопасно:** неидемпотентно + класс-дефолт
+  по имени. Незнакомый инструмент не получает ни повторов, ни чужого бюджета.
+* **`screen_capture` оставлен в системном классе (5 с).** Наряд назвал для
+  60-секундного класса только `computer_screenshot`. Поднимать бюджет
+  инструменту, который читает экран, без указания — небезопасное направление.
+  Асимметрия зафиксирована ниже как найденное.
+* **`computer_mouse`/`computer_keyboard` подняты до 60 с, как указано в
+  наряде**, но с оговоркой: это в 6 раз более длинное окно, в течение
+  которого синтетический ввод на legacy-пути (кооперативная отмена) не
+  прерывается жёстко. Не отклоняюсь от наряда — фиксирую риск.
+* **`list_files_recursive` оставлен неидемпотентным.** Он читающий, но в
+  явный список наряда не входит; безопасное направление — не расширять
+  список повторяемых инструментов самовольно.
+* **`core/research_gateway.py:96` получил явный `max_retries=2`** — он был
+  единственным производственным вызовом, опиравшимся на дефолт. `web_fetch`
+  идемпотентен, зажим его пропускает, число попыток по сети осталось 3.
+* **Расширение сверх буквы наряда:** утечка регистрируется и для
+  subprocess-ветки, не только для legacy. Наряд описывал поток, но живой
+  ОС-процесс — худший случай, и оставить его единственным неучтённым было бы
+  непоследовательно.
+
+### Правка существующего теста — обоснование
+
+`tests/test_security_regressions.py` — `test_browser_tools_use_web_timeout_budget`
+переименован в `test_browser_tools_use_browser_timeout_budget` и переписан. Это
+единственная неизбежная правка: тест закреплял именно то, что S4 меняет —
+принадлежность браузерных инструментов **веб**-классу. Смысл теста («браузер не
+должен получать короткий файловый бюджет») сохранён и усилен: добавлен
+`computer_screenshot`, который раньше как раз падал в файловый класс, и добавлена
+проверка `tool_timeout_for("web_fetch") == 31.0`, то есть закреплено, что
+браузерный бюджет **не выводится** из соседнего класса. Ни одна проверка не
+удалена, порог не ослаблен.
+
+`tests/test_hardening_executor.py:49` — проверка **добавлена**
+(`side_effects_contained is True`), ничего не снято.
+
+### Тест
+
+`tests/regressions/test_s4_executor_retry_and_leaks.py` — 57 проверок:
+
+| Что закрепляет | Проверка |
+|---|---|
+| дефолт `max_retries` == 0 | `inspect.signature` у `execute` и `execute_tool` + поведение |
+| наряд: «`write_file` с ошибкой вызван ровно один раз» | `calls == 1` при `max_retries=2` от вызывающего |
+| наряд: «`read_file` до 3 раз» | `calls == 3` при `max_retries=2` |
+| ошибка доходит до repair как есть | `result.error == "stub failure"` |
+| флаг идемпотентности ровно на читающих | 26 параметризованных паспортов |
+| поле объявлено на dataclass | `Capability.from_tool(tool, idempotent=True, timeout_sec=7.5)` + `to_dict` |
+| наряд: «счётчик утечек растёт на подвисшем legacy» | `count == before + 1`, `terminated=True`, `contained=False` |
+| значения аргументов не утекают в диагностику | `api_key` отсутствует в `json.dumps(stats)` |
+| честная отмена не считается утечкой | `contained=True`, счётчик не изменился |
+| успешный `play_music`-подобный вызов не считается утечкой | `ok=True`, `contained=False`, счётчик не изменился |
+| несколько вызывающих потоков на одном executor | 4 потока → `+4` записи |
+| payload сериализуем | `json.dumps` при `object()` в аргументах |
+| история ограничена | `maxlen` и лимит отчёта |
+| классы таймаутов | 14 параметризованных имён |
+| browser/CUA = 60 с | `browser_automation`, `computer_keyboard`, `computer_screenshot` |
+| Settings сильнее код-дефолтов | web/system/file сверяются с `settings.limits` |
+| непригодная настройка → класс-дефолт | `0.0` и `None` дают 10 с и 15 с |
+| паспортный `timeout_sec` сильнее класса | `monkeypatch` на 3.5 с |
+| tripwire на молчаливую деградацию паспортов | свежий интерпретатор: 4 авто-паспорта на месте, всего ≥ 26 |
+| счётчик доведён до диагностики | `runtime_diagnostics` содержит `"tools"` и вызов accessor'а |
+
+### Проверка
+
+| Прогон | Результат | Завершение процесса |
+|---|---|---|
+| `pytest tests/regressions/test_s4_executor_retry_and_leaks.py` | `57 passed in 3.30s` | сам, код 0 |
+| `pytest tests/regressions tests/test_sprint3.py tests/test_hardening_executor.py tests/test_security_regressions.py` | `243 passed, 1 skipped, 2 warnings in 35.66s` | сам, код 0 |
+| `pytest tests/routing` | `42 passed, 2 warnings in 31.69s` | **зависает** после итоговой строки, убит внешним `timeout` на 180 с (код 124) |
+| `python -m compileall -q core/actions/executor.py config/settings.py core/capabilities.py` | без ошибок | сам, код 0 |
+
+Живая проверка классов и политики (`tool_timeout_for` на `Settings()`):
+browser/CUA 60.0, web 30.0, system 5.0, file 10.0, неизвестный инструмент 10.0;
+`write_file` с ошибкой — 1 вызов, `read_file` — 3.
+
+Побочно: после прогонов `tests/routing` в системе остались два осиротевших
+процесса `python -m pytest` (3 ГБ и 56 МБ) — то самое зависание на выходе,
+внешний `timeout` убивает обёртку, а дочерний процесс переживает её. Процессы
+сняты `taskkill`. Это симптом уже зафиксированной проблемы `tests/routing`,
+не следствие S4.
+
+### Найдено попутно, не тронуто
+
+* **`screen_capture` 5 с против `computer_screenshot` 60 с.** Два инструмента
+  снимают экран, бюджеты различаются в 12 раз. Наряд назвал только второй,
+  поэтому первый не тронут. Разумное решение — общий класс «снятие экрана», но
+  это правка объёма, которого в наряде нет.
+* **`list_files_recursive` остался неидемпотентным** — читающий инструмент без
+  права на повтор. Формально безопасно, содержательно непоследовательно с
+  `list_files`.
+* **`scripts/routing_eval.py:374`** подменяет `execute_tool` заглушкой с
+  собственной сигнатурой `max_retries: int = 2`, которая значение игнорирует.
+  Заглушка не влияет на продукт, но продолжает утверждать старый дефолт.
+* **`ActionResult.terminated` в продукте не читает никто** — только
+  `to_dict()` и один тест. Флаг, введённый как страховка от побочных эффектов,
+  ни на одно решение агента не влияет.
+* **`_run_subprocess` не закрывает `result_queue` на ветке таймаута**
+  (`executor.py`, ветка `queue.Empty`) — существовало до S4, к утечке
+  побочных эффектов не относится, поэтому оставлено.
+* **`computer_mouse`/`computer_keyboard`: 60 с некупируемого окна** на
+  legacy-пути (кооперативная отмена) — риск принят по наряду, зафиксирован
+  выше.
+
 
 `pytest` зависает **после** печати итоговой строки, на завершении процесса.
 Замерено отдельно по каталогам:

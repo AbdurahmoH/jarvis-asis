@@ -103,6 +103,14 @@ class Capability:
     evidence_scope: str = "system"      # system | internal | user_visible
     examples_ru: List[str] = field(default_factory=list)
     counter_examples_ru: List[str] = field(default_factory=list)
+    # S4: политика повторов. Автоматический повтор допустим ТОЛЬКО для
+    # идемпотентных вызовов — тех, где второй вызов с теми же аргументами
+    # не меняет состояние мира (чтение, запрос без побочных эффектов).
+    # Дефолт False сознательно: неизвестный инструмент не ретраится.
+    idempotent: bool = False
+    # S4: явный потолок времени именно для этого инструмента, секунды.
+    # None — берётся класс-дефолт (см. core/actions/executor.py).
+    timeout_sec: Optional[float] = None
 
     @classmethod
     def from_tool(cls, tool: Any, **overrides: Any) -> "Capability":
@@ -142,6 +150,8 @@ class Capability:
             "tags": list(self.tags),
             "model_visible": self.model_visible,
             "evidence_scope": self.evidence_scope,
+            "idempotent": self.idempotent,
+            "timeout_sec": self.timeout_sec,
             "strict_verifier": has_strict_verifier(self.name),
         }
 
@@ -186,6 +196,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         risk_level=RiskLevel.LOW,
         speed=Speed.FAST,
         success_check="в ответе реально присутствуют метрики CPU/RAM/диск",
+        idempotent=True,
         tags=["system", "статус", "cpu", "память", "ram", "диск", "батарея"],
     ),
     "current_time": dict(
@@ -194,6 +205,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         risk_level=RiskLevel.LOW,
         speed=Speed.INSTANT,
         success_check="ответ содержит локальное время и дату",
+        idempotent=True,
         tags=["system", "время", "час", "дата", "clock", "time"],
     ),
     "play_music": dict(
@@ -217,6 +229,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.SLOW,
         internet_required=True,
         success_check="получен непустой список результатов",
+        idempotent=True,
         fallbacks=["web_fetch"],
         tags=["web", "поиск", "найди", "search", "интернет", "информация", "документация"],
     ),
@@ -227,6 +240,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.SLOW,
         internet_required=True,
         success_check="ответ содержит свежие структурированные данные источника",
+        idempotent=True,
         tags=["web", "fresh", "currency", "news", "курс", "валюта", "новости"],
     ),
     "web_fetch": dict(
@@ -236,6 +250,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.SLOW,
         internet_required=True,
         success_check="страница загружена и содержит осмысленный текст (>50 символов)",
+        idempotent=True,
         fallbacks=["web_search"],
         tags=["web", "url", "страница", "сайт", "fetch", "прочитай", "документация"],
     ),
@@ -246,6 +261,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.INSTANT,
         file_access="read",
         success_check="возвращён непустой листинг",
+        idempotent=True,
         tags=["file", "файлы", "папка", "каталог", "список"],
     ),
     "read_file": dict(
@@ -255,6 +271,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.INSTANT,
         file_access="read",
         success_check="контент реально прочитан (непустой)",
+        idempotent=True,
         fallbacks=["search_files"],
         tags=["file", "прочитай", "файл", "документ", "текст"],
     ),
@@ -275,6 +292,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.FAST,
         file_access="read",
         success_check="реально найдены совпадения (не 'ничего не найдено')",
+        idempotent=True,
         fallbacks=[],
         tags=["file", "найди", "поиск", "файл", "где", "документ"],
     ),
@@ -292,6 +310,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         risk_level=RiskLevel.LOW,
         speed=Speed.INSTANT,
         success_check="возвращён список",
+        idempotent=True,
         tags=["reminder", "напоминания", "список"],
     ),
     "cancel_reminder": dict(
@@ -309,6 +328,7 @@ _CAP_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         speed=Speed.SLOW,
         internet_required=True,
         success_check="получен непустой прогноз",
+        idempotent=True,
         tags=["weather", "погода", "температура", "прогноз"],
     ),
     # ------------------------------------------------------------------ #

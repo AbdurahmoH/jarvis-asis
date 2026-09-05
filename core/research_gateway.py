@@ -93,7 +93,11 @@ class ResearchGateway:
         tool = DEFAULT_REGISTRY.get("web_fetch")
         if tool is None:
             return {"ok": False, "error": "web_fetch capability unavailable"}
-        outcome = execute_tool(DEFAULT_REGISTRY, "web_fetch", {"url": url}, ToolContext(settings=self.settings))
+        # S4: явные 2 повтора вместо опоры на дефолт execute_tool — дефолт стал
+        # 0. web_fetch идемпотентен (паспорт), поэтому зажим их пропускает и
+        # число попыток по сети остаётся прежним (3).
+        outcome = execute_tool(DEFAULT_REGISTRY, "web_fetch", {"url": url}, ToolContext(settings=self.settings),
+                               max_retries=2)
         return {"ok": bool(outcome.ok), "url": url, "content": outcome.output if outcome.ok else "", "error": outcome.error}
 
     def verify_sources(self, result: ResearchResult | ResearchReport | Mapping[str, Any]) -> dict[str, Any]:

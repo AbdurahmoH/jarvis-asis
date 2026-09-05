@@ -447,6 +447,12 @@ class LimitsConfig(_Section):
     tool_timeout_file_sec: float = 10.0
     tool_timeout_web_sec: float = 30.0
     tool_timeout_system_sec: float = 5.0
+    # S4: браузер и CUA — отдельный класс. Раньше браузерные инструменты
+    # делили веб-бюджет, а computer_* попадали в файловый (10 c): навигация
+    # со скриптами и физический ввод не укладываются в такой потолок и
+    # получали ложный таймаут. Класс явный, чтобы бюджет не выводился из
+    # соседнего.
+    tool_timeout_browser_sec: float = 60.0
     #: Максимум параллельных вызовов инструментов (изоляция ресурсов).
     max_parallel_tools: int = 4
     #: Потолок вывода одного инструмента, байты (50 KB; больше — усечение).
@@ -485,7 +491,8 @@ class LimitsConfig(_Section):
 
     @field_validator("response_timeout_sec", "fast_tier_timeout_sec",
                      "deep_tier_timeout_sec", "tool_timeout_file_sec",
-                     "tool_timeout_web_sec", "tool_timeout_system_sec")
+                     "tool_timeout_web_sec", "tool_timeout_system_sec",
+                     "tool_timeout_browser_sec")
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
         if value <= 0:
