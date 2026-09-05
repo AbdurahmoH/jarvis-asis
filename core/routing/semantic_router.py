@@ -115,44 +115,88 @@ class RoutingDecision:
 #  Risk Gate: Независимая оценка рисков
 # --------------------------------------------------------------------------- #
 
+# --- Текстовые правила: аудит S1(c) ------------------------------------------
+# Правило отбора: текстовое правило остаётся ТОЛЬКО если тот же сигнал не несёт
+# ни один паспорт возможности (core/capabilities.py) — иначе оно дублирует
+# метаданные и удалено. Все правила лишь ПОВЫШАЮТ уровень (max_level); базу
+# задаёт паспорт. У каждой альтернативы стоит граница \b: без неё совпадение
+# ловилось внутри другого слова (`ключ\w*` совпадал в «в-ключи»/«от-ключи» и
+# поднимал «включи музыку» до high, а «отключи брандмауэр» ПОНИЖАЛ с critical).
+# Удалены (сигнал уже в паспорте): _UI_PHYSICAL_AUTOMATION_RE (computer_mouse,
+# computer_keyboard, browser_* — risk=high), _WRITE_OPS_RE (write_file=medium),
+# _PROCESS_KILL_RE (close_app=medium). Таблица — docs/security/status.md.
+
+#: Системные каталоги и реестр. Не выводится из args: assess_risk вызывается и
+#: до выбора инструмента (tool=None, args=None) — путь назван только в тексте;
+#: инструмента правки реестра в реестре возможностей нет вообще.
+#: Проверяется по СЫРОМУ тексту: normalize_text срезает обратные слэши.
 _SYSTEM_PATH_RE = re.compile(
-    r"(?i)(\\windows\\|system32|hosts\b|drivers\\etc|program files|hkey_|реестр|registry|\b[a-z]:\\windows)",
+    r"(?i)(\\windows\\|\bsystem32\b|\bhosts\b|drivers\\etc|\bprogram files\b|\bhkey_|"
+    r"\bреестр|\bregistry\b|\b[a-z]:\\windows)",
 )
 
+#: Массовость. Не выводится из args: «удали всё» не содержит ни одного пути.
+#: Граница \b перенесена внутрь группы: снаружи она ломала маску `*.ext`
+#: (перед `*` границы слова нет, поэтому альтернатива никогда не срабатывала).
 _MASS_INDICATORS_RE = re.compile(
-    r"(?i)\b(все|всё|всех|всем|каждый|каждого|подчистую|целиком|полностью|массово|\*\.[a-z0-9]+)\b",
+    r"(?i)(?:\b(?:все|всё|всех|всем|каждый|каждого|подчистую|целиком|полностью|массово)\b"
+    r"|\*\.[a-z0-9]+)",
 )
 
+#: Деструктивные глаголы. Не выводится из args: инструмента удаления в реестре
+#: возможностей НЕТ (backlog file_delete — 5 запросов в eval-наборе), поэтому
+#: намерение существует только в тексте.
 _DESTRUCTIVE_ACTIONS_RE = re.compile(
-    r"(?i)(удал\w*|сотр\w*|стереть|очист\w*|снес\w*|убей|убить|прибей|прибить|перезапиш\w*|форматир\w*|сбрось|сброс\w*|уничтож\w*|переустанов\w*|wipe|format|destroy|terminate|rm\s*-?rf|rmdir|remove|delete)",
+    r"(?i)(\bудал\w*|\bсотр\w*|\bстереть\b|\bочист\w*|\bснес\w*|\bубей\b|\bубить\b|\bприбей\b"
+    r"|\bприбить\b|\bперезапиш\w*|\bформатир\w*|\bсброс\w*|\bуничтож\w*|\bпереустанов\w*"
+    r"|\bwipe\w*|\bformat\w*|\bdestroy\w*|\bterminate\w*|\brm\s*-?rf\b|\brmdir\w*|\bremove\w*"
+    r"|\bdelete\w*)",
 )
 
+#: Питание и сеанс ОС. Не выводится из args: инструмента выключения или
+#: перезагрузки в реестре НЕТ (backlog system_power).
 _POWER_SESSION_RE = re.compile(
-    r"(?i)(заверши.*сеанс|перезагруз\w*|выключ\w*.*компьютер|отключ\w*.*питани\w*|гибернац\w*|explorer[\.\s]+exe|shutdown|reboot|power off)",
+    r"(?i)(\bзаверши\w*.*\bсеанс|\bперезагруз\w*|\bвыключ\w*.*\bкомпьютер|\bотключ\w*.*\bпитани\w*"
+    r"|\bгибернац\w*|\bexplorer[\.\s]+exe\b|\bshutdown\w*|\breboot\w*|\bpower off\b)",
 )
 
+#: Ослабление защиты и разведка уязвимостей («отключи защиту» из ТЗ S1c).
+#: Не выводится из args: инструмента управления брандмауэром/Defender в реестре
+#: НЕТ (backlog security_settings), а сам глагол «отключи» без объекта безопасен.
 _SECURITY_WEAKEN_RE = re.compile(
-    r"(?i)(брандмауэр|firewall|защит\w*|defender|антивирус\w*|antivirus|uac|контрол[ья] учетн\w*|eventlog|уязвимост\w*|цифров\w* подпис\w*|драйвер\w*|nmap|открыт\w* порт\w*)",
+    r"(?i)(\bбрандмауэр\w*|\bfirewall\w*|\bзащит\w*|\bdefender\b|\bантивирус\w*|\bantivirus\w*"
+    r"|\buac\b|\bконтрол[ья] учетн\w*|\beventlog\w*|\bуязвимост\w*|\bцифров\w* подпис\w*"
+    r"|\bдрайвер\w*|\bnmap\b|\bоткрыт\w* порт\w*)",
 )
 
+#: Секреты и учётные данные. Не выводится из args: «покажи мои пароли» не
+#: содержит пути — конкретный файл выберет уже инструмент.
 _SENSITIVE_DATA_RE = re.compile(
-    r"(?i)(парол\w*|password|токен\w*|secret\w*|api key|cvv|ключ\w*|сертификат\w*|credential\w*|id_rsa|ssh|баз\w* клиент\w*)",
+    r"(?i)(\bпарол\w*|\bpassword\w*|\bтокен\w*|\bsecret\w*|\bapi key\b|\bcvv\b|\bключ\w*"
+    r"|\bсертификат\w*|\bcredential\w*|\bid_rsa\b|\bssh\b|\bбаз\w* клиент\w*)",
 )
 
+#: Действие без надзора — модификатор намерения, в аргументы не попадает вообще.
 _UNSUPERVISED_AUTONOMY_RE = re.compile(
-    r"(?i)(пока меня нет|без меня|в мое отсутствие|автономно)",
+    r"(?i)(\bпока меня нет\b|\bбез меня\b|\bв мое отсутствие\b|\bавтономно\b)",
 )
 
+#: Форматирование накопителя. Инструмента в реестре НЕТ (backlog disk_format).
 _FORMAT_DISK_RE = re.compile(
-    r"(?i)(форматир\w*|размет\w*|fat32|ntfs|exfat|ext4|жесткий диск|накопител\w*|раздел\w*)",
+    r"(?i)(\bформатир\w*|\bразмет\w*|\bfat32\b|\bntfs\b|\bexfat\b|\bext4\b|\bжесткий диск\w*"
+    r"|\bнакопител\w*|\bраздел\w*)",
 )
 
+#: BIOS, разгон, веб-камера. Инструментов в реестре НЕТ (backlog device_manager).
 _HARDWARE_FIRMWARE_RE = re.compile(
-    r"(?i)(биос\w*|bios|разгон\w*|разогн\w*|тактов\w* частот\w*|веб[\s-]камер\w*)",
+    r"(?i)(\bбиос\w*|\bbios\b|\bразгон\w*|\bразогн\w*|\bтактов\w* частот\w*|\bвеб[\s-]камер\w*)",
 )
 
-_UI_PHYSICAL_AUTOMATION_RE = re.compile(
-    r"(?i)(кликни|нажми|прокрути|напечатай|авторизуйся|заполни форму|вкладк\w* браузер\w*)",
+#: Необратимость, названная словами (примеры из ТЗ S1c: «без бэкапа»,
+#: «навсегда»). Это модификатор намерения: в аргументах инструмента его нет и
+#: быть не может — подстрочная проверка, а не новый классификатор.
+_IRREVERSIBLE_MARKERS = (
+    "без сохранения", "без бэкапа", "без резервной копии", "навсегда", "безвозвратно",
 )
 
 
@@ -183,26 +227,23 @@ _T0C_VOLUME_VERB_NOUN_RE = re.compile(r"(?i)\b(?:громкость|звук)\b"
 _T0C_VOLUME_ARG_RE = re.compile(
     r"(?i)(?:на\s+\d+\s*%|до\s+\d+\s*%|\d+\s*%|наполовину|до\s+половины|на\s+(?:десять|двадцать|тридцать|сорок|пятьдесят)\s+процент\w*)")
 
-#: Отправка сообщений и финансовые операции (перенесено из safety.py, HIGH).
+#: Отправка сообщений и платежи (HIGH). Не выводится из args: инструментов
+#: отправки писем и переводов в реестре возможностей НЕТ (backlog network_send).
 _SENDING_FINANCE_RE = re.compile(
-    r"(?i)(отправ\w*|пошли\b|напиши\s+письмо|send\s+(mail|email|message)|"
-    r"оплат\w*|плат\w*\s+(за|картой)|купи\b|покуп\w*|payment|purchase|checkout|"
-    r"перевед[ия]\s+деньги)"
+    r"(?i)(\bотправ\w*|\bпошли\b|\bнапиши\s+письмо\b|\bsend\s+(mail|email|message)\b|"
+    r"\bоплат\w*|\bплат\w*\s+(за|картой)\b|\bкупи\b|\bпокуп\w*|\bpayment\w*|\bpurchase\w*"
+    r"|\bcheckout\b|\bперевед[ия]\s+деньги\b)"
 )
 
-#: Запись на диск (MEDIUM — выполняем, но фиксируем).
-_WRITE_OPS_RE = re.compile(
-    r"(?i)(запиши|сохран\w*|созда[йь]\w*\s+(файл|документ)|перезапиш\w*|\bwrite\b|\bsave\b)"
-)
+#: Установка ПО (MEDIUM). Оставлено: инструмента установки в реестре НЕТ, то
+#: есть паспорт этот сигнал не несёт; в args установка выглядит как обычная
+#: строка. Уровень medium подтверждения не требует — это метка для журнала.
+_INSTALL_RE = re.compile(r"(?i)(\bустанов\w*|\binstall\w*|\bpip\s+install\b|\bnpm\s+i\b)")
 
-#: Установка ПО (MEDIUM).
-_INSTALL_RE = re.compile(r"(?i)(установ\w*|\binstall\b|pip\s+install|npm\s+i\b)")
-
-#: Загрузка файла из сети (MEDIUM).
-_DOWNLOAD_RE = re.compile(r"(?i)(скачай|скачать|загрузи\s+файл|\bdownload\b)")
-
-#: Завершение процессов (MEDIUM; «без сохранения» эскалируется выше до HIGH).
-_PROCESS_KILL_RE = re.compile(r"(?i)(закрой|закрыть|заверши\s+процесс|\bkill\b|terminate)")
+#: Загрузка файла из сети (MEDIUM). Оставлено по той же причине: паспорта
+#: «скачать» нет (web_fetch=low читает страницу, а не пишет файл на диск).
+#: Запуск скачанного ловится отдельно — _EXECUTABLE_RE в аргументах (7b).
+_DOWNLOAD_RE = re.compile(r"(?i)(\bскачай\b|\bскачать\b|\bзагрузи\s+файл\b|\bdownload\w*)")
 
 #: Структурная инспекция аргументов инструмента на предмет инъекций и деструктивных операций (§21).
 _SHELL_INJECTION_RE = re.compile(r"[;|`]|&&|\|\||\$\(|\$\{")
@@ -292,9 +333,20 @@ def assess_risk(
 ) -> Union[Tuple[str, bool], Tuple[str, bool, List[str]]]:
     """Независимая оценка риска действия.
 
-    Гарантирует 0 False Negatives для деструктивных, системных и приватных операций
-    даже до определения конкретного инструмента. Аргументы инструмента (пути,
-    имена файлов, команды) эскалируют риск так же, как текст запроса.
+    Контракт (S1): уровень МОНОТОННО НЕУБЫВАЮЩИЙ.
+
+    * Базу задаёт паспорт возможности (``core/capabilities.py``: ``risk_level``
+      с per-action динамикой). Это единственное место, где уровень
+      присваивается; у ``Capability`` нет поля ``effect`` — эффект классифицирует
+      ``core/authority.classify_effect`` по тексту запроса, а ``permissions``
+      остаются описательными метаданными и уровень не задают.
+    * Текст запроса и аргументы инструмента только ПОВЫШАЮТ уровень через
+      ``max_level``. Ни одно правило не понижает его: дописанное к фразе слово
+      не может снять подтверждение (закреплено property-тестом
+      ``tests/regressions/test_s1_risk_monotonicity.py``).
+
+    Гарантирует 0 False Negatives для деструктивных, системных и приватных
+    операций даже до определения конкретного инструмента.
     """
     reasons: List[str] = []
     level = "low"
@@ -304,10 +356,12 @@ def assess_risk(
     args_t = _args_text(args_hint)
     norm_args = normalize_text(args_t)
 
-    # 1. Анализ рискованности назначенного инструмента
-    # Per-action override: browser_bridge и screen_capture имеют высокий
-    # паспортный риск по умолчанию, но безопасные действия (навигация,
-    # чтение DOM, снимок) не требуют подтверждения — риск low.
+    # 1. База: паспорт возможности. Это ЕДИНСТВЕННЫЙ источник, которому
+    # разрешено ЗАДАВАТЬ уровень; всё ниже только повышает его через max_level.
+    # Per-action динамика: паспорт публикует МАКСИМУМ инструмента, а Risk Gate
+    # оценивает конкретное действие — навигация и чтение DOM не должны требовать
+    # того же подтверждения, что слепой клик. Снимок экрана из этого списка
+    # УБРАН (S1d): он гейтится паспортом наравне с остальными.
     _browser_safe_actions = {
         "open", "navigate", "inspect_dom", "find", "read",
         "wait", "extract", "observe", "close", "type",
@@ -316,79 +370,73 @@ def assess_risk(
         action_val = str((args_hint or {}).get("action", "")).casefold()
         cap = CAPABILITIES.get(tool)
         if cap is not None:
-            _use_passport_risk = True
+            passport_level = cap.risk_level.value
             if tool == "browser_bridge" and action_val in _browser_safe_actions:
-                _use_passport_risk = False
-            elif tool in ("computer_screenshot", "screen_capture"):
-                _use_passport_risk = False
+                passport_level = "low"
             elif tool == "computer_mouse" and action_val == "move":
-                _use_passport_risk = False
+                passport_level = "low"
             elif tool == "computer_keyboard" and action_val == "focus_window":
-                _use_passport_risk = False
-            if _use_passport_risk and cap.risk_level.value in ("high", "critical"):
-                level = cap.risk_level.value
-                reasons.append(f"рискованный инструмент {tool}")
+                passport_level = "low"
+            # Единственное присваивание уровня в функции. level здесь всегда
+            # ещё "low", поэтому понизить что-либо оно не может.
+            level = passport_level
+            if passport_level != "low":
+                reasons.append(f"паспорт {tool}: risk={passport_level}")
 
-    # 2. Системные каталоги и реестр
+    # 2. Системные каталоги и реестр (по сырому тексту: нужны обратные слэши)
     if _SYSTEM_PATH_RE.search(raw_text):
-        level = "critical"
+        level = max_level(level, "critical")
         reasons.append("доступ к системным путям или реестру")
 
     # 3. Управление питанием и сеансом
     if _POWER_SESSION_RE.search(norm_t):
-        level = "high"
+        level = max_level(level, "high")
         reasons.append("управление питанием или завершение сеанса ОС")
 
     # 4. Ослабление безопасности и аудит
     if _SECURITY_WEAKEN_RE.search(norm_t):
-        level = "critical"
+        level = max_level(level, "critical")
         reasons.append("изменение параметров безопасности или аудит уязвимостей")
 
     # 5. Секретные и учетные данные
     if _SENSITIVE_DATA_RE.search(norm_t):
-        level = "high"
+        level = max_level(level, "high")
         reasons.append("работа с конфиденциальными данными или секретами")
 
-    # 6. Массовые и деструктивные операции
+    # 6. Массовые и деструктивные операции. Правила независимы (набор if), а не
+    # цепочка elif: цепочка ПОНИЖАЛА итог — раннее совпадение массовости на
+    # high пропускало ветку форматирования накопителя на critical, поэтому
+    # дописанное «все» снижало уровень готовой фразы.
     is_destructive = bool(_DESTRUCTIVE_ACTIONS_RE.search(norm_t))
     is_mass = bool(_MASS_INDICATORS_RE.search(norm_t))
 
     if is_destructive:
         if is_mass or any(k in norm_t for k in ("temp", "корзин", "диск", "лог", "браузер", "флешк", "fat32", "истори")):
-            level = "critical"
+            level = max_level(level, "critical")
             reasons.append("массовое или необратимое удаление данных")
         else:
-            level = "high"
+            level = max_level(level, "high")
             reasons.append("деструктивная операция с файлами/процессами")
-    elif is_mass and any(w in norm_t for w in ("архив", "сгруппир", "перенес", "скопир", "удал", "очист", "сотр", "снес", "закрой", "убей", "процесс", "файл", "диск")):
-        level = "high"
+    if is_mass and any(w in norm_t for w in ("архив", "сгруппир", "перенес", "скопир", "удал", "очист", "сотр", "снес", "закрой", "убей", "процесс", "файл", "диск")):
+        level = max_level(level, "high")
         reasons.append("массовая обработка файлов или процессов")
-    elif _FORMAT_DISK_RE.search(norm_t) and any(k in norm_t for k in ("диск", "флешк", "раздел", "накопител")):
-        level = "critical"
+    if _FORMAT_DISK_RE.search(norm_t) and any(k in norm_t for k in ("диск", "флешк", "раздел", "накопител")):
+        level = max_level(level, "critical")
         reasons.append("деструктивная операция форматирования накопителя")
-    elif _HARDWARE_FIRMWARE_RE.search(norm_t):
-        level = "high"
+    if _HARDWARE_FIRMWARE_RE.search(norm_t):
+        level = max_level(level, "high")
         reasons.append("низкоуровневая настройка оборудования или прошивки")
-    elif _UNSUPERVISED_AUTONOMY_RE.search(norm_t):
-        level = "high"
+    if _UNSUPERVISED_AUTONOMY_RE.search(norm_t):
+        level = max_level(level, "high")
         reasons.append("автономная модификация системы в отсутствие пользователя")
-    elif "без сохранения" in norm_t:
-        level = "high"
-        reasons.append("закрытие приложений без сохранения данных")
-    elif _UI_PHYSICAL_AUTOMATION_RE.search(norm_t) and any(act in norm_t for act in ("кликни", "нажми", "прокрути", "напечатай", "авторизуйся", "заполни")):
-        level = "high"
-        reasons.append("прямая эмуляция пользовательского ввода")
+    if any(marker in norm_t for marker in _IRREVERSIBLE_MARKERS):
+        level = max_level(level, "high")
+        reasons.append("действие названо необратимым (без сохранения/бэкапа, навсегда)")
 
-    # 6b. Отправка/финансы (HIGH), запись/установка/загрузка/процессы (MEDIUM)
+    # 6b. Отправка/финансы (HIGH), установка/загрузка (MEDIUM)
     if _SENDING_FINANCE_RE.search(norm_t):
         level = max_level(level, "high")
         reasons.append("отправка сообщений или финансовая операция")
-    elif _PROCESS_KILL_RE.search(norm_t):
-        level = max_level(level, "medium")
-        reasons.append("завершение процессов или закрытие приложений")
-    if _WRITE_OPS_RE.search(norm_t):
-        level = max_level(level, "medium")
-        reasons.append("запись на диск")
     if _INSTALL_RE.search(norm_t):
         level = max_level(level, "medium")
         reasons.append("установка ПО")
@@ -419,7 +467,7 @@ def assess_risk(
         if _MASS_INDICATORS_RE.search(arg_val):
             level = max_level(level, "high")
             reasons.append("массовая операция в аргументах инструмента")
-        if _EXECUTABLE_RE.search(arg_val) and level == "low":
+        if _EXECUTABLE_RE.search(arg_val):
             level = max_level(level, "medium")
             reasons.append("операция с исполняемым файлом")
 

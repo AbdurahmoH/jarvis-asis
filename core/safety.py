@@ -116,6 +116,9 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
     # 2) Паспорт инструмента.  UI/browser capabilities publish their maximum
     # risk in the registry, but Risk Gate evaluates the concrete action.  Safe
     # observation/navigation must not require the same grant as a blind click.
+    # Снимок экрана (computer_screenshot/screen_capture) из этого списка УБРАН
+    # (S1d): он гейтится паспортом наравне с остальными — то же исключение
+    # стояло и в semantic_router, поэтому чтение экрана вообще не поднималось.
     if tool:
         cap = CAPABILITIES.get(tool)
         if cap is not None:
@@ -126,8 +129,6 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
                     dynamic_level = RiskLevel.LOW
                 elif action in {"click", "press", "download"}:
                     dynamic_level = RiskLevel.HIGH
-            elif tool == "computer_screenshot":
-                dynamic_level = RiskLevel.LOW
             elif tool == "computer_mouse" and action == "move":
                 dynamic_level = RiskLevel.LOW
             elif tool == "computer_keyboard" and action == "focus_window":
