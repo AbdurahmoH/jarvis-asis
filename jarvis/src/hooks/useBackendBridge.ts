@@ -131,10 +131,10 @@ export function useBackendBridge() {
     await backend.interrupt();
   }, []);
 
-  const answerConfirmation = useCallback(async (approved: boolean) => {
+  const answerConfirmation = useCallback(async (approved: boolean, scope?: string) => {
     const current = pendingConfirmation;
     if (!current) return;
-    await backend.answerConfirmation(current.id, approved);
+    await backend.answerConfirmation(current.id, approved, scope);
     setPendingConfirmation(null);
   }, [pendingConfirmation]);
 

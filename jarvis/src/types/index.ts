@@ -170,6 +170,11 @@ export interface PendingConfirmation {
   prompt: string;
   tool: string;
   risk: { level?: string; [key: string]: unknown };
+  /**
+   * S3: объёмы полномочия, которые предложил сервер («один раз» / «на сеанс» /
+   * «постоянно»). Пусто — обычное подтверждение без выдачи гранта.
+   */
+  scopes?: string[];
 }
 
 /* ===== Backend adapter contract (src/integrations/backend.ts) ===== */
@@ -179,7 +184,7 @@ export interface BackendAdapter {
   getSystemVitals(): Promise<VitalsData>;
   interrupt(): Promise<void>;
   /** Ответить на ожидающее HIGH-risk подтверждение backend. */
-  answerConfirmation(confirmationId: string, approved: boolean): Promise<void>;
+  answerConfirmation(confirmationId: string, approved: boolean, scope?: string): Promise<void>;
 }
 
 export interface BackendEvent {

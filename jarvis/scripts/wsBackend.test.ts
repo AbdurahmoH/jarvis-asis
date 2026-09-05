@@ -134,8 +134,33 @@ assert.deepEqual(JSON.parse(socket.sent[3]), {
   approve: false,
 });
 
+// S3: отказ не несёт объём — разрешать нечего.
+await transport.answerConfirmation('screen-1', false, 'session');
+assert.deepEqual(JSON.parse(socket.sent[4]), {
+  type: 'confirm',
+  confirmation_id: 'screen-1',
+  approve: false,
+});
+
+// S3: выбранный человеком объём уходит на сервер вместе с согласием.
+await transport.answerConfirmation('screen-2', true, 'session');
+assert.deepEqual(JSON.parse(socket.sent[5]), {
+  type: 'confirm',
+  confirmation_id: 'screen-2',
+  approve: true,
+  scope: 'session',
+});
+
+// Без выбора объёма поле scope не подставляется клиентом.
+await transport.answerConfirmation('confirm-3', true);
+assert.deepEqual(JSON.parse(socket.sent[6]), {
+  type: 'confirm',
+  confirmation_id: 'confirm-3',
+  approve: true,
+});
+
 await transport.hotkeyPressed();
-assert.deepEqual(JSON.parse(socket.sent[4]), { type: 'hotkey_pressed' });
+assert.deepEqual(JSON.parse(socket.sent[7]), { type: 'hotkey_pressed' });
 
 // Кадр auth отправлен ровно один раз за соединение.
 assert.equal(socket.sent.filter((raw) => JSON.parse(raw).type === 'auth').length, 1);

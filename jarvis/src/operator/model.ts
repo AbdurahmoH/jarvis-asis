@@ -173,6 +173,9 @@ export function confirmationFromEvent(event: BackendEvent): PendingConfirmation 
     prompt: typeof payload.prompt === 'string' ? payload.prompt : 'Подтвердите действие',
     tool: typeof payload.tool === 'string' ? payload.tool : '',
     risk: recordOf(payload.risk) ?? {},
+    scopes: Array.isArray(payload.scopes)
+      ? payload.scopes.filter((item): item is string => typeof item === 'string')
+      : [],
   };
 }
 

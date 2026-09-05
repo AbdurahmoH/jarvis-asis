@@ -1473,6 +1473,15 @@ class Orchestrator:
     def check_authority(self, request: AuthorityRequest):
         return self._authority.check(request)
 
+    def execute_authorized(self, request: AuthorityRequest, callback):
+        """Run ``callback`` only while the grant is provably still valid.
+
+        S3: проверка и исполнение под одним замком хранилища. Раздельные
+        ``check_authority`` + вызов оставляли окно, в котором отзыв гранта
+        уже произошёл, а действие всё ещё выполнялось.
+        """
+        return self._authority.execute_authorized(request, callback)
+
     def reschedule_mission(
         self, task_id: str, trigger: MissionTrigger | Mapping[str, Any],
     ) -> bool:

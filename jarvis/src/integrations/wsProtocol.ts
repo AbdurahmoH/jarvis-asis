@@ -19,6 +19,7 @@ type SocketEnvelope = {
   prompt?: unknown;
   tool?: unknown;
   risk?: unknown;
+  scopes?: unknown;
   vitals?: unknown;
   message?: unknown;
   has_name?: unknown;
@@ -68,6 +69,11 @@ export function mapSocketEnvelope(raw: unknown, receivedAt = Date.now()): Transp
   if (kind === 'confirmation_required') {
     const confirmationId = asString(envelope.confirmation_id);
     if (!confirmationId) return [];
+    // S3: сервер перечисляет допустимые объёмы разрешения; выдумывать их на
+    // клиенте нельзя — грант выдаёт сервер по тому, что сам предложил.
+    const scopes = Array.isArray(envelope.scopes)
+      ? (envelope.scopes as unknown[]).filter((item): item is string => typeof item === 'string')
+      : [];
     return [{
       type: 'confirmation:required',
       payload: {
@@ -75,6 +81,7 @@ export function mapSocketEnvelope(raw: unknown, receivedAt = Date.now()): Transp
         prompt: asString(envelope.prompt) ?? '',
         tool: asString(envelope.tool) ?? '',
         risk: asRecord(envelope.risk) ?? {},
+        scopes,
       },
       timestamp: receivedAt,
     }];

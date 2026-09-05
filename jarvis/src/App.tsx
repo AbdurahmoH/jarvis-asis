@@ -184,11 +184,11 @@ function App() {
     if (!fixture) void backend.sendCommand(text, []).catch(() => transition('error'));
   }, [append, backend, closeOverlay, fixture, overlay, transition, tts]);
 
-  const answerConfirmation = useCallback((approved: boolean) => {
+  const answerConfirmation = useCallback((approved: boolean, scope?: string) => {
     const pending = confirmation;
     if (!pending) return;
     setConfirmation(null);
-    if (!fixture) void backend.answerConfirmation(pending.id, approved).catch(() => transition('error'));
+    if (!fixture) void backend.answerConfirmation(pending.id, approved, scope).catch(() => transition('error'));
     if (approved) {
       const event: BackendEvent = { type: 'state:executing', payload: null, timestamp: Date.now() };
       setMission((current) => current ? reduceMission(current, event) : current);

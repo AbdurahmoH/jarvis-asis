@@ -21,7 +21,7 @@ interface Props {
   messages: PresenceMessage[]; state: PresenceState; mode: UiMode; mission: OperatorMission | null;
   confirmation: PendingConfirmation | null; firstLaunch: boolean; onModeChange: (mode: UiMode) => void;
   onSend: (text: string) => void; onInterrupt: () => void; onVoiceListen: () => void;
-  onConfirm: (approved: boolean) => void; onNewSession: () => void; connected: boolean;
+  onConfirm: (approved: boolean, scope?: string) => void; onNewSession: () => void; connected: boolean;
   runtimeState: string; runtimeDiagnostics: Record<string, unknown>; signals: LiveSignal[];
 }
 
@@ -146,7 +146,19 @@ function TopBar({ props, onTheme, onDiagnostics }: { props: Props; onTheme: () =
   const clock = useClock(); const meta = visualMeta(props);
   return <header className="topBar" data-tauri-drag-region><div className="brandMark"><span>J</span><div><strong>JARVIS</strong><small>личный помощник</small></div></div><div className="realStatus"><StatusItem icon={<Activity size={13} />} label="Статус" value={meta.label} tone={meta.state} /><StatusItem icon={<Globe2 size={13} />} label="Связь" value={props.connected ? 'на связи' : 'нет связи'} tone={props.connected ? 'success' : 'error'} /></div><div className="windowTools"><time>{clock}</time><button onClick={onDiagnostics} aria-label="Диагностика"><Settings2 size={15} /></button><button onClick={onTheme} aria-label="Тема"><Palette size={15} /></button><button onClick={() => props.onModeChange('presence')} aria-label="Компактный режим"><Minimize2 size={15} /></button><button onClick={() => windowAction('minimize')} aria-label="Свернуть"><span>—</span></button><button onClick={() => windowAction('maximize')} aria-label="Развернуть"><Square size={12} /></button><button className="close" onClick={() => windowAction('close')} aria-label="Закрыть"><X size={15} /></button></div></header>;
 }
-function Confirmation({ props }: { props: Props }) { if (!props.confirmation) return null; return <div className="confirmationBar"><div><strong>Подтвердить действие</strong><span>{props.confirmation.prompt}</span></div><button onClick={() => props.onConfirm(true)}><Check size={14} /> Разрешить</button><button onClick={() => props.onConfirm(false)}><X size={14} /> Отмена</button></div>; }
+// S3: когда backend предлагает объёмы полномочия, кнопка «Разрешить» одна на
+// каждый объём. Клиент не придумывает свои: список приходит с сервера, и
+// именно выбранное значение уходит обратно в кадре confirm.
+const SCOPE_LABELS: Record<string, string> = {
+  once: 'Один раз', session: 'На этот сеанс', permanent: 'Всегда',
+};
+function Confirmation({ props }: { props: Props }) {
+  if (!props.confirmation) return null;
+  const scopes = props.confirmation.scopes ?? [];
+  return <div className="confirmationBar"><div><strong>Подтвердить действие</strong><span>{props.confirmation.prompt}</span></div>{scopes.length > 0
+    ? scopes.map((scope) => <button key={scope} onClick={() => props.onConfirm(true, scope)}><Check size={14} /> {SCOPE_LABELS[scope] ?? scope}</button>)
+    : <button onClick={() => props.onConfirm(true)}><Check size={14} /> Разрешить</button>}<button onClick={() => props.onConfirm(false)}><X size={14} /> Отмена</button></div>;
+}
 
 function Workspace(props: Props) {
   const [theme, setTheme] = useState(false); const [diagnostics, setDiagnostics] = useState(false); const meta = visualMeta(props); const hasContext = props.signals.length > 0;

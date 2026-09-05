@@ -10,14 +10,21 @@
 
   Клиент -> Сервер:
     {"type": "command",  "text": "<текст команды>"}
-    {"type": "confirm",  "confirmation_id": "<id>", "approve": true|false}
+    {"type": "confirm",  "confirmation_id": "<id>", "approve": true|false,
+                         "scope": "once"|"session"|"permanent"}
+    {"type": "screen_capture"}
     {"type": "interrupt"}
     {"type": "ping"}
+
+  ``scope`` относится только к подтверждениям, которые выдают полномочие
+  (S3: снимок экрана). Само разрешение клиент запросить не может: у
+  ``screen_capture`` нет аргументов, решение принимает сервер по гранту
+  ``core.authority``.
 
   Сервер -> Клиент (broadcast на всех подключённых):
     {"type": "state",    "state": "thinking"|"executing"|"streaming"|"idle"|"error"|"cloud"|"listening"}
     {"type": "event",    "event": { ... ActivityEvent-совместимый объект ... }}
-    {"type": "confirmation_required", "confirmation_id": "<id>", "prompt": "...", "tool": "...", "risk": {...}}
+    {"type": "confirmation_required", "confirmation_id": "<id>", "prompt": "...", "tool": "...", "risk": {...}, "scopes": [...]}
     {"type": "vitals",   "vitals": {...}}
     {"type": "pong"}
     {"type": "error",    "message": "..."}
@@ -43,6 +50,11 @@ from uuid import uuid4
 
 from config import load_config
 from config.settings import Settings
+from core.authority import (
+    SCREEN_SCOPES,
+    screen_capture_proposal,
+    screen_capture_request,
+)
 from core.orchestrator import Orchestrator
 from core.task_runtime import (
     EVENT_ACKNOWLEDGED,
@@ -167,6 +179,14 @@ class JarvisWSServer:
         self._authorized_clients: Set[Any] = set()
         self._message_times: dict[int, list[float]] = {}
         self._clients: Set[Any] = set()
+        # S3: снимок экрана ждёт решения пользователя, а не флага в сообщении.
+        # confirmation_id -> {"client": id(ws)}; запись живёт до ответа
+        # `confirm` и снимается в любом исходе (разрешение или отказ).
+        self._pending_screen: dict[str, dict[str, Any]] = {}
+        # id(ws) -> grant_id: гранты со scope=session привязаны к соединению
+        # и отзываются при отключении, иначе «на сессию» означало бы «до
+        # перезапуска процесса».
+        self._session_screen_grants: dict[int, set[str]] = {}
         self._lock = threading.RLock()
         # task_id, для которых уже отправлен event:jarvis:start (чтобы не
         # дублировать start на каждый токен в streaming-пути).
@@ -506,6 +526,9 @@ class JarvisWSServer:
         finally:
             if readiness_task is not None:
                 readiness_task.cancel()
+            # S3: «на сессию» означает на это соединение, поэтому гранты
+            # закрываются до того, как клиент исчезнет из учёта.
+            self._revoke_session_screen_grants(ws)
             with self._lock:
                 self._clients.discard(ws)
                 self._authorized_clients.discard(ws)
@@ -779,6 +802,155 @@ class JarvisWSServer:
 
         clear_backend_cache()
         return self._cloud_settings_payload()
+
+    # ------------------------------------------------------------------
+    # S3: снимок экрана — решение сервера, а не флаг клиента
+    # ------------------------------------------------------------------
+    #: Одна формулировка отказа на все пути: по ней ориентируется UI.
+    SCREEN_DENIED = "screen capture requires an explicit user authorization"
+
+    def _authority_api(self, name: str):
+        """Метод полномочий у Orchestrator или None — основа fail-closed."""
+        candidate = getattr(self._orch, name, None)
+        return candidate if callable(candidate) else None
+
+    async def _capture_authorized(self) -> Dict[str, Any]:
+        """Кадр снимка, если грант действителен; иначе PermissionError.
+
+        Проверка и захват идут одним вызовом ``execute_authorized``, то есть
+        под замком хранилища: между «разрешено» и снимком нельзя вклиниться
+        отзывом гранта. ``to_thread`` — потому что и захват экрана, и замок
+        блокирующие: на цикле событий они остановили бы весь мост.
+        """
+        execute = self._authority_api("execute_authorized")
+        if execute is None:
+            raise PermissionError(self.SCREEN_DENIED)
+
+        def _capture() -> Any:
+            from core.vision.screen import ScreenCapture
+
+            return ScreenCapture().capture(permission=True)
+
+        decision, result = await asyncio.to_thread(
+            execute, screen_capture_request(), _capture,
+        )
+        if not decision.allowed or result is None:
+            raise PermissionError(f"{self.SCREEN_DENIED}: {decision.reason}")
+        return {
+            "type": "screen_capture",
+            "text": result.text,
+            "active_window": result.active_window,
+            "url": result.url,
+            "grant_id": decision.grant_id,
+        }
+
+    async def _handle_screen_capture(self, ws: Any) -> None:
+        """Есть грант — снимок; нет — запрос подтверждения у пользователя."""
+        check = self._authority_api("check_authority")
+        if check is None:
+            # Ядро без хранилища полномочий не может ничего разрешить.
+            await ws.send(json.dumps({"type": "error", "message": self.SCREEN_DENIED}))
+            return
+        try:
+            decision = await asyncio.to_thread(check, screen_capture_request())
+        except Exception as exc:
+            log.warning("Проверка полномочий на снимок экрана не удалась: %s", exc)
+            await ws.send(json.dumps({"type": "error", "message": self.SCREEN_DENIED}))
+            return
+        if decision.allowed:
+            try:
+                await ws.send(json.dumps(await self._capture_authorized()))
+            except Exception as exc:
+                await ws.send(json.dumps({"type": "error",
+                                          "message": _safe_error_text(exc)}))
+            return
+        # Отказ — это не ошибка, а вопрос: UI показывает подтверждение с
+        # выбором объёма, и только ответ пользователя создаёт грант.
+        confirmation_id = f"screen-{uuid4().hex}"
+        with self._lock:
+            self._pending_screen[confirmation_id] = {"client": id(ws)}
+        await ws.send(json.dumps({
+            "type": "confirmation_required",
+            "confirmation_id": confirmation_id,
+            "prompt": "Разрешить снимок экрана для локального распознавания текста?",
+            "tool": "screen_capture",
+            "risk": {"level": "medium", "reason": decision.reason},
+            "scopes": list(SCREEN_SCOPES),
+        }))
+
+    async def _confirm_screen_capture(self, ws: Any, confirmation_id: str,
+                                     approve: bool, scope: Any) -> None:
+        """Ответ пользователя на запрос снимка: грант выдаётся здесь и только здесь."""
+        with self._lock:
+            pending = self._pending_screen.pop(confirmation_id, None)
+        if pending is None:  # pragma: no cover - защита от повторного confirm
+            return
+        if not approve:
+            await ws.send(json.dumps({"type": "error", "message": self.SCREEN_DENIED}))
+            return
+        requested = str(scope or "once").strip().casefold()
+        if requested not in SCREEN_SCOPES:
+            # Неизвестный объём не трактуется «как разрешение поменьше»:
+            # клиент прислал то, чего в протоколе нет.
+            await ws.send(json.dumps({"type": "error",
+                                      "message": f"unknown scope: {requested}"}))
+            return
+        issue = self._authority_api("issue_authority")
+        revoke = self._authority_api("revoke_authority")
+        if issue is None:
+            await ws.send(json.dumps({"type": "error", "message": self.SCREEN_DENIED}))
+            return
+        try:
+            grant = await asyncio.to_thread(
+                lambda: issue(
+                    screen_capture_proposal(requested),
+                    user_instruction=(
+                        "пользователь подтвердил снимок экрана "
+                        f"(объём: {requested})"
+                    ),
+                    source_id=confirmation_id,
+                    source_role="user",
+                ),
+            )
+        except Exception as exc:
+            log.warning("Грант на снимок экрана не выдан: %s", _safe_error_text(exc))
+            await ws.send(json.dumps({"type": "error",
+                                      "message": _safe_error_text(exc)}))
+            return
+        grant_id = getattr(grant, "grant_id", None)
+        if requested == "session" and grant_id:
+            with self._lock:
+                self._session_screen_grants.setdefault(id(ws), set()).add(grant_id)
+        try:
+            await ws.send(json.dumps(await self._capture_authorized()))
+        except Exception as exc:
+            await ws.send(json.dumps({"type": "error",
+                                      "message": _safe_error_text(exc)}))
+        finally:
+            if requested == "once" and grant_id and revoke is not None:
+                # «Один раз» действительно один раз: TTL здесь страховка,
+                # а отзыв сразу после снимка — само правило.
+                try:
+                    await asyncio.to_thread(revoke, grant_id, "scope=once spent")
+                except Exception as exc:  # pragma: no cover - хранилище на диске
+                    log.warning("Не отозван одноразовый грант на снимок: %s", exc)
+
+    def _revoke_session_screen_grants(self, ws: Any) -> None:
+        """Отключение клиента закрывает его гранты «на сессию»."""
+        with self._lock:
+            grant_ids = self._session_screen_grants.pop(id(ws), set())
+            stale = [cid for cid, item in self._pending_screen.items()
+                     if item.get("client") == id(ws)]
+            for cid in stale:
+                self._pending_screen.pop(cid, None)
+        revoke = self._authority_api("revoke_authority")
+        if revoke is None:
+            return
+        for grant_id in grant_ids:
+            try:
+                revoke(grant_id, "ws client disconnected")
+            except Exception as exc:  # pragma: no cover - хранилище на диске
+                log.warning("Не отозван сессионный грант на снимок: %s", exc)
 
     async def _on_message(self, ws, raw: str) -> None:
         if self._auth_token and ws not in self._authorized_clients:
@@ -1054,7 +1226,12 @@ class JarvisWSServer:
         elif mtype == "confirm":
             cid = msg.get("confirmation_id")
             approve = bool(msg.get("approve", False))
-            if cid:
+            if cid and cid in self._pending_screen:
+                # S3: подтверждения снимка экрана живут в мосте, а не в
+                # Orchestrator: их порождает протокол, а не план агента.
+                await self._confirm_screen_capture(ws, str(cid), approve,
+                                                   msg.get("scope"))
+            elif cid:
                 # Sprint 1 STEP 3: подтверждение запускает реальное выполнение
                 # инструмента — тоже через executor, чтобы не блокировать цикл.
                 loop = self._loop
@@ -1149,15 +1326,9 @@ class JarvisWSServer:
                 })
                 self._speak(text)
         elif mtype == "screen_capture":
-            if msg.get("permission") is not True:
-                await ws.send(json.dumps({"type": "error", "message": "Screen capture requires explicit permission"}))
-                return
-            try:
-                from core.vision.screen import ScreenCapture
-                result = ScreenCapture().capture(permission=True)
-                await ws.send(json.dumps({"type": "screen_capture", "text": result.text, "active_window": result.active_window, "url": result.url}))
-            except Exception as exc:
-                await ws.send(json.dumps({"type": "error", "message": _safe_error_text(exc)}))
+            # S3: флага permission в протоколе больше нет — разрешение
+            # спрашивается у хранилища полномочий, а не у клиента.
+            await self._handle_screen_capture(ws)
         elif mtype == "first_launch":
             # The ritual owns exactly one durable datum: the name.  Save it
             # through the existing profile store instead of inventing a

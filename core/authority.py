@@ -15,7 +15,7 @@ import secrets
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -28,7 +28,9 @@ from core.task_runtime import MissionStatus, TaskEvent
 __all__ = [
     "AuthorityDecision", "AuthorityGrant", "AuthorityProposal",
     "AuthorityRequest", "AuthorityStatus", "AuthorityStore", "ProvenanceKind",
-    "classify_effect",
+    "SCREEN_ACTION", "SCREEN_EFFECT", "SCREEN_FAMILY", "SCREEN_PURPOSE",
+    "SCREEN_RESOURCE", "SCREEN_SCOPES", "SCREEN_SCOPE_TTL", "SCREEN_SUBJECT",
+    "classify_effect", "screen_capture_proposal", "screen_capture_request",
 ]
 
 
@@ -82,6 +84,31 @@ def _safe_constraints(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return result
 
 
+#: S3: чтение экрана — отдельный эффект, а не «какой-то инструмент».  Имя
+#: инструмента/действия — структурное поле, поэтому это НЕ текстовый
+#: классификатор: свободный текст цели здесь не участвует.
+_SCREEN_TOOLS = frozenset({"screen_capture", "computer_screenshot", "screenshot"})
+
+SCREEN_EFFECT = "read_screen"
+SCREEN_SUBJECT = "local user"
+SCREEN_RESOURCE = "screen"
+SCREEN_ACTION = "screen_capture"
+SCREEN_FAMILY = "vision"
+SCREEN_PURPOSE = "screen context for the assistant"
+_SCREEN_PRINCIPAL = "user"
+_SCREEN_DELEGATE = "jarvis"
+
+#: Область действия разрешения → срок жизни гранта.  «Навсегда» как отдельной
+#: сущности не существует: это тоже TTL-грант, просто долгий.  «Один раз» —
+#: короткий грант, который вызывающая сторона отзывает сразу после снимка.
+SCREEN_SCOPE_TTL: Mapping[str, timedelta] = {
+    "once": timedelta(minutes=2),
+    "session": timedelta(hours=12),
+    "permanent": timedelta(days=365),
+}
+SCREEN_SCOPES: tuple[str, ...] = tuple(SCREEN_SCOPE_TTL)
+
+
 def classify_effect(goal: str, action: str, tool: str = "",
                     arguments: Mapping[str, Any] | None = None) -> str:
     """Classify the concrete effect without trusting a model-supplied label."""
@@ -94,6 +121,10 @@ def classify_effect(goal: str, action: str, tool: str = "",
         return "security"
     if any(word in text for word in ("delete", "remove", "wipe", "format", "удал", "сотри", "формат")):
         return "destructive"
+    # Проверка ПОСЛЕ перечисленных выше: цель, явно направленная на секреты или
+    # разрушение, остаётся за пределами гранта на чтение экрана (fail-closed).
+    if _key(tool) in _SCREEN_TOOLS or _key(action) in _SCREEN_TOOLS:
+        return SCREEN_EFFECT
     if _key(action) in {"send_message", "read_message", "reply", "conversation"}:
         return "conversation"
     return _key(tool or action or "unknown")
@@ -130,6 +161,42 @@ class AuthorityRequest:
     mission_id: Optional[str] = None
     commitment_id: Optional[str] = None
     constraints: Mapping[str, Any] = field(default_factory=dict)
+
+
+def screen_capture_request(
+    *, risk: RiskLevel | str = RiskLevel.MEDIUM, mission_id: Optional[str] = None,
+    commitment_id: Optional[str] = None,
+) -> "AuthorityRequest":
+    """Запрос на чтение экрана — одинаковый для WS-моста и для инструмента.
+
+    ``risk`` по умолчанию равен паспортному уровню возможности (S1: medium).
+    Более высокая оценка НЕ покрывается грантом с ceiling=medium — это
+    сознательный fail-closed: «покажи пароли с экрана» снова спросит.
+    """
+    return AuthorityRequest(
+        subject=SCREEN_SUBJECT, resource=SCREEN_RESOURCE, action=SCREEN_ACTION,
+        capability_family=SCREEN_FAMILY, effect=SCREEN_EFFECT,
+        purpose=SCREEN_PURPOSE, risk=risk,
+        mission_id=mission_id, commitment_id=commitment_id,
+    )
+
+
+def screen_capture_proposal(scope: str, *, now: datetime | None = None) -> "AuthorityProposal":
+    """Предложение гранта на чтение экрана для одной из ``SCREEN_SCOPES``.
+
+    Неизвестная область действия — ``KeyError``: молчаливого «разрешим на всякий
+    случай навсегда» не бывает.
+    """
+    ttl = SCREEN_SCOPE_TTL[str(scope or "").strip().casefold()]
+    start = now or _now()
+    return AuthorityProposal(
+        principal=_SCREEN_PRINCIPAL, delegate=_SCREEN_DELEGATE,
+        subjects=[SCREEN_SUBJECT], resources=[SCREEN_RESOURCE],
+        allowed_actions=[SCREEN_ACTION], capability_families=[SCREEN_FAMILY],
+        allowed_effects=[SCREEN_EFFECT], denied_actions=[],
+        purposes=[SCREEN_PURPOSE], risk_ceiling=RiskLevel.MEDIUM,
+        valid_from=start, expires_at=start + ttl,
+    )
 
 
 @dataclass(frozen=True)

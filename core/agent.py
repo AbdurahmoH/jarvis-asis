@@ -1278,7 +1278,9 @@ class Agent:
         )
         if authority.allowed:
             trace.append(f"delegated authority matched grant={authority.grant_id}")
-        if (exec_risk.needs_confirmation and not authority.allowed
+        if ((exec_risk.needs_confirmation
+                or self._screen_authority_missing(decision.tool, exec_risk))
+                and not authority.allowed
                 and not self._config.auto_confirm_high_risk):
             trace.append(f"HIGH risk -> требуется подтверждение: {exec_risk.reasons}")
             conf_id = uuid.uuid4().hex
@@ -1597,37 +1599,113 @@ class Agent:
         # Подтверждено — выполняем.
         if mission is not None:
             mission.set_status(MissionStatus.EXECUTING, "подтверждено, выполняю")
-        if self.deepseek_brain_mode:
-            decision = pending.get("decision")
-            if not isinstance(decision, ToolCallDecision):
-                decision = ToolCallDecision(
-                    tool=tool,
-                    arguments=args,
-                    reason="approved concrete action",
-                    risk=getattr(getattr(risk, "level", None), "value", "high"),
-                    verification="verify requested goal outcome after execution",
+        # S3: согласие человека — единственное место, где рождается полномочие
+        # на чтение экрана. Инструмент его не выдаёт (там нет пользователя),
+        # модель — тем более: она может только попросить. Грант живёт ровно на
+        # время этого подтверждённого исполнения и отзывается в finally.
+        screen_grant = self._grant_screen_authority(tool, pending, confirmation_id, goal)
+        try:
+            if self.deepseek_brain_mode:
+                decision = pending.get("decision")
+                if not isinstance(decision, ToolCallDecision):
+                    decision = ToolCallDecision(
+                        tool=tool,
+                        arguments=args,
+                        reason="approved concrete action",
+                        risk=getattr(getattr(risk, "level", None), "value", "high"),
+                        verification="verify requested goal outcome after execution",
+                    )
+                loop_state = pending.get("loop_state") or {}
+                return self._execute_capability_loop(
+                    goal=goal,
+                    first_decision=decision,
+                    mission=mission,
+                    cancel=cancel,
+                    trace=trace,
+                    risk=risk,
+                    caps=caps,
+                    routing=loop_state.get("routing"),
+                    memory_ctx=str(loop_state.get("memory_ctx") or ""),
+                    initial_observations=loop_state.get("observations") or [],
+                    start_step=int(loop_state.get("start_step") or 0),
+                    confirmation_approved=True,
+                    required_capability_ids=loop_state.get("required_capability_ids") or (),
                 )
-            loop_state = pending.get("loop_state") or {}
-            return self._execute_capability_loop(
-                goal=goal,
-                first_decision=decision,
-                mission=mission,
-                cancel=cancel,
-                trace=trace,
-                risk=risk,
-                caps=caps,
-                routing=loop_state.get("routing"),
-                memory_ctx=str(loop_state.get("memory_ctx") or ""),
-                initial_observations=loop_state.get("observations") or [],
-                start_step=int(loop_state.get("start_step") or 0),
+            return self._execute_verified(
+                goal=goal, tool=tool, args=args, mission=mission,
+                cancel=cancel, trace=trace, risk=risk, caps=caps,
                 confirmation_approved=True,
-                required_capability_ids=loop_state.get("required_capability_ids") or (),
             )
-        return self._execute_verified(
-            goal=goal, tool=tool, args=args, mission=mission,
-            cancel=cancel, trace=trace, risk=risk, caps=caps,
-            confirmation_approved=True,
-        )
+        finally:
+            self._revoke_screen_authority(screen_grant)
+
+    #: Инструменты, которым подтверждение выдаёт полномочие ``read_screen``.
+    _SCREEN_CONFIRMED_TOOLS = frozenset({"screen_capture"})
+    #: Грант на чтение экрана имеет risk_ceiling=medium; выше — не его дело.
+    _SCREEN_GRANT_LEVELS = frozenset({"low", "medium"})
+
+    def _screen_authority_missing(self, tool: Any, risk: Any) -> bool:
+        """True, когда нужно полномочие ``read_screen``, его нет, и оно поможет.
+
+        S3: снимок экрана имеет паспортный риск medium, то есть сам по себе
+        подтверждения не требует. Но без гранта инструмент откажет, поэтому
+        отсутствие полномочия — самостоятельная причина спросить человека.
+        Если конкретное действие оценено выше medium, спрашивать нечестно:
+        грант с ceiling=medium его всё равно не разрешит.
+        """
+        from core.authority import screen_capture_request
+
+        if str(tool or "").strip().casefold() not in self._SCREEN_CONFIRMED_TOOLS:
+            return False
+        if self._authority is None:
+            # Хранилища нет — обещать разрешение нельзя, инструмент откажет сам.
+            return False
+        level = getattr(risk, "level", None)
+        level_name = str(getattr(level, "value", level) or "").strip().casefold()
+        if level_name and level_name not in self._SCREEN_GRANT_LEVELS:
+            return False
+        try:
+            return not self._authority.check(screen_capture_request()).allowed
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            log.warning("Проверка полномочия на снимок экрана не удалась: %s", exc)
+            return False
+
+    def _grant_screen_authority(self, tool: Any, pending: Dict[str, Any],
+                                confirmation_id: str, goal: str) -> Optional[str]:
+        """Выдаёт грант на снимок экрана после согласия человека (S3)."""
+        from core.authority import ProvenanceKind, screen_capture_proposal
+
+        if self._authority is None:
+            return None
+        decision = pending.get("decision")
+        names = {
+            str(tool or "").strip().casefold(),
+            str(getattr(decision, "tool", "") or "").strip().casefold(),
+        }
+        if not names & self._SCREEN_CONFIRMED_TOOLS:
+            return None
+        instruction = (goal or "").strip() or "пользователь подтвердил снимок экрана"
+        try:
+            grant = self._authority.issue(
+                screen_capture_proposal("once"),
+                source_kind=ProvenanceKind.USER_INSTRUCTION,
+                source_role="user",
+                source_text=instruction,
+                source_id=str(confirmation_id),
+            )
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            log.warning("Полномочие на снимок экрана не выдано: %s", exc)
+            return None
+        return getattr(grant, "grant_id", None)
+
+    def _revoke_screen_authority(self, grant_id: Optional[str]) -> None:
+        """Закрывает полномочие сразу после подтверждённого исполнения."""
+        if not grant_id or self._authority is None:
+            return
+        try:
+            self._authority.revoke(grant_id, "confirmation consumed")
+        except (ValueError, TypeError, KeyError, OSError) as exc:  # pragma: no cover
+            log.warning("Полномочие на снимок экрана не отозвано: %s", exc)
 
     # ------------------------------------------------------------------ #
     #  П1 §1.3 — voice-first confirmation watchdog
@@ -3028,7 +3106,9 @@ class Agent:
                     mission, goal=goal, tool=next_decision.tool,
                     args=next_decision.arguments, risk=next_risk,
                 )
-                if (next_risk.needs_confirmation and not next_authority.allowed
+                if ((next_risk.needs_confirmation
+                        or self._screen_authority_missing(next_decision.tool, next_risk))
+                        and not next_authority.allowed
                         and not self._config.auto_confirm_high_risk):
                     conf_id = uuid.uuid4().hex
                     with self._lock:
@@ -3193,7 +3273,9 @@ class Agent:
                 mission, goal=goal, tool=next_decision.tool,
                 args=next_decision.arguments, risk=next_risk,
             )
-            if (next_risk.needs_confirmation and not next_authority.allowed
+            if ((next_risk.needs_confirmation
+                    or self._screen_authority_missing(next_decision.tool, next_risk))
+                    and not next_authority.allowed
                     and not self._config.auto_confirm_high_risk):
                 trace.append(f"next action requires confirmation: {next_risk.reasons}")
                 conf_id = uuid.uuid4().hex
@@ -3281,6 +3363,10 @@ class Agent:
                 "confirmation_approved": bool(confirmation_approved),
                 "task_runtime": self._task_runtime,
                 "tool_executor": self._tool_executor,
+                # S3: инструменты, которым нужно разрешение пользователя,
+                # спрашивают хранилище полномочий, а не собственные аргументы.
+                "authority": self._authority,
+                "risk_level": getattr(risk.level, "value", str(risk.level)),
                 "authority_grant_id": (
                     self.authorize_delegated_action(
                         mission, goal=goal, tool=tool, args=args, risk=risk,
@@ -3459,6 +3545,10 @@ class Agent:
                 gate_risk = assess_risk(goal, call_tool, call_args)
                 if gate_risk.needs_confirmation and not self._config.auto_confirm_high_risk:
                     return "; ".join(gate_risk.reasons) or "повышенный риск операции"
+                if self._screen_authority_missing(call_tool, gate_risk):
+                    # S3: без гранта read_screen повтор обречён — нужен человек,
+                    # а не ещё один заведомо отказанный вызов.
+                    return "нет полномочия на чтение экрана: нужно подтверждение пользователя"
                 return None
 
             repair = self._repair.run(

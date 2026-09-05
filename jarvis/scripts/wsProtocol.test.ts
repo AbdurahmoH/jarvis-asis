@@ -45,6 +45,32 @@ assert.deepEqual(
       prompt: 'Подтвердите действие',
       tool: 'filesystem.delete',
       risk: { level: 'high' },
+      // S3: подтверждение без выдачи полномочия приходит без scopes —
+      // клиент получает пустой список, а не выдуманный «once».
+      scopes: [],
+    },
+    timestamp: now,
+  }],
+);
+
+// S3: объёмы полномочия приходят от сервера и доходят до UI как есть.
+assert.deepEqual(
+  mapSocketEnvelope({
+    type: 'confirmation_required',
+    confirmation_id: 'screen-1',
+    prompt: 'Разрешить снимок экрана?',
+    tool: 'screen_capture',
+    risk: { level: 'medium' },
+    scopes: ['once', 'session', 'permanent', 42],
+  }, now),
+  [{
+    type: 'confirmation:required',
+    payload: {
+      confirmationId: 'screen-1',
+      prompt: 'Разрешить снимок экрана?',
+      tool: 'screen_capture',
+      risk: { level: 'medium' },
+      scopes: ['once', 'session', 'permanent'],
     },
     timestamp: now,
   }],
@@ -52,4 +78,4 @@ assert.deepEqual(
 
 assert.deepEqual(mapSocketEnvelope({ type: 'unknown' }, now), []);
 
-console.log('wsProtocol: 5 assertions passed');
+console.log('wsProtocol: 6 assertions passed');

@@ -211,8 +211,14 @@ export class WebSocketBackend implements BackendAdapter {
     if (name.trim()) await this.send({ type: 'first_launch', name: name.trim() });
   }
 
-  async answerConfirmation(confirmationId: string, approved: boolean): Promise<void> {
-    await this.send({ type: 'confirm', confirmation_id: confirmationId, approve: approved });
+  async answerConfirmation(confirmationId: string, approved: boolean, scope?: string): Promise<void> {
+    // S3: scope уходит только когда пользователь его выбрал. Клиент не
+    // подставляет объём по умолчанию — «сколько разрешить» решает человек.
+    const frame: Record<string, unknown> = {
+      type: 'confirm', confirmation_id: confirmationId, approve: approved,
+    };
+    if (approved && scope) frame.scope = scope;
+    await this.send(frame);
   }
 
   getSystemVitals(): Promise<VitalsData> {
