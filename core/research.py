@@ -50,7 +50,6 @@ __all__ = [
     "Finding",
     "ResearchReport",
     "ResearchEngine",
-    "is_research_goal",
 ]
 
 log = get_logger(__name__)
@@ -192,18 +191,6 @@ class ResearchReport:
 
 
 #: Триггеры research-режима (§18).
-_RESEARCH_RE = re.compile(
-    r"\b(изучи|исследуй|найди информацию|собери информацию|сравни|сравнение|"
-    r"проверь документацию|разберись|проанализируй|research|investigate|compare)\b",
-    re.IGNORECASE,
-)
-
-
-def is_research_goal(goal: str) -> bool:
-    """Нужен ли для цели research workflow (§18)."""
-    return bool(_RESEARCH_RE.search(goal or ""))
-
-
 # --------------------------------------------------------------------------- #
 #  Движок
 # --------------------------------------------------------------------------- #

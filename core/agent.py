@@ -64,14 +64,14 @@ from core.memory.short_term import SessionManager
 from core.model_router import ModelRouter, RoutingDecision
 from core.personality import PersonalityEngine
 from core.repair import RepairLoop
-from core.research import ResearchEngine, is_research_goal
+from core.research import ResearchEngine
 from core.routing.semantic_router import (
     RoutingContext as SemanticRoutingContext,
     RoutingDecision as SemanticRoutingDecision,
     intent_category as semantic_intent_category,
     route as semantic_route,
+    split_compound_by_decision,
 )
-from core.router.intent_router import split_compound_commands
 from core.router.route_guard import validate_tool_selection
 from core.safety import RiskAssessment, assess_risk
 from core.redact import redact_args
@@ -928,7 +928,11 @@ class Agent:
         self._mark_latency("route_complete")
 
         # ---- 2a. UNSUPPORTED (шаг 5): честный отказ без подмены ----
-        if decision.kind == "action" and decision.tool is None:
+        # Составная цель сначала разделяется по решению роутера: каждая
+        # часть получает честную обработку, отказ по одной части не
+        # хоронит весь запрос (аудит 1b).
+        compound = split_compound_by_decision(goal, llm_available=self._llm_available_cached())
+        if decision.kind == "action" and decision.tool is None and not compound:
             return self._handle_unsupported(decision, goal, mission, trace)
 
         # ---- 2b. CLARIFY из прямого вызова agent.execute ----
@@ -960,7 +964,7 @@ class Agent:
 
         # Explicit independent clauses become a verified batch.  This keeps
         # a planner from silently completing only the first half of a request.
-        compound = split_compound_commands(goal)
+        # Разбиение уже проверено по решению роутера выше (split_compound_by_decision).
         if compound:
             trace.append(f"compound batch -> {len(compound)} clauses")
             if mission is not None:
@@ -984,11 +988,9 @@ class Agent:
         if cancel.is_set():
             return AgentOutcome(text="Задача отменена.", mode="cancelled", trace=trace)
 
-        # Неизвестная capability формулировками пользователя уходит в
-        # research-путь раньше conversation gate (осознанный перенос гейта).
-        if "неизвестная команда" in goal.casefold() or "неизвестную команду" in goal.casefold():
-            trace.append("unknown capability marker -> research")
-            return self._handle_unknown(goal, [], mission, trace, reason="нет зарегистрированной способности")
+        # (R2, позиция 11) keyword-маркер «неизвестная команда» удалён:
+        # маршрут цели определяет только decision. Неизвестные возможности
+        # обрабатываются в planning/discovery-путях (_handle_unknown).
 
         # ---- 4. SKILL: есть ли готовый навык под эту цель (§9) ----
         skill = self._match_skill(goal)
@@ -1037,7 +1039,9 @@ class Agent:
             )
 
         # ---- 7. RESEARCH MODE (§18): явное исследование ----
-        if decision.kind == "mission" and is_research_goal(goal) and not self.deepseek_brain_mode:
+        # Research-режим определяет роутер (decision.is_research по классу
+        # research-якорей); keyword-классификатор is_research_goal удалён.
+        if decision.kind == "mission" and decision.is_research and not self.deepseek_brain_mode:
             trace.append("режим: research workflow")
             return self._handle_research(goal, mission, cancel, trace)
 
@@ -1713,6 +1717,7 @@ class Agent:
             mission.set_status(MissionStatus.EXECUTING, "выполняю составную задачу")
             mission.set_progress(0.4, "выполнение составных шагов")
         outcomes: List[AgentOutcome] = []
+        refused: List[str] = []
         for index, part in enumerate(parts, start=1):
             if cancel.is_set():
                 return AgentOutcome(
@@ -1734,7 +1739,19 @@ class Agent:
                 part, mission=None, cancel=cancel, decision=part_decision,
             )
             if outcome.needs_confirmation:
+                # Подтверждение очередной части возвращается вместе с
+                # честными отказами по неподдерживаемым частям (R8, 1b):
+                # пользователь видит и отказ, и запрос подтверждения.
+                if refused:
+                    outcome.text = "\n".join(refused + [outcome.text])
+                outcome.trace = trace + outcome.trace
                 return outcome
+            if outcome.mode == "unsupported":
+                # Невыполнимая часть фиксируется честным отказом (R8) и не
+                # мешает исполнению остальных самостоятельных частей.
+                refused.append(outcome.text)
+                outcomes.append(outcome)
+                continue
             outcomes.append(outcome)
             trace.extend(f"compound[{index}] {item}" for item in outcome.trace[-8:])
 

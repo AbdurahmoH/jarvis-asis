@@ -154,13 +154,9 @@ def new_state(
         verified=False,
         mode="conversation",
     )
-    # Every state-producing path is self-describing.  The local import avoids
-    # a cycle while the router package is initialising.
-    try:
-        from core.router.intent_router import resolve_keyword_tool
-        state["intent"] = resolve_keyword_tool(user_input, user_input)
-    except Exception:
-        state["intent"] = None
+    # (R2, позиция 2) keyword-классификатор resolve_keyword_tool удалён из
+    # построения состояния: intent в живом пути проставляется оркестратором
+    # из решения semantic-роутера (semantic_intent_category(decision)).
     return state
 
 

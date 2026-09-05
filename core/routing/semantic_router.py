@@ -24,7 +24,7 @@ from tokenizers import Tokenizer
 
 from config.settings import DEFAULT_EMBEDDING_MODEL, Settings
 from core.capabilities import CAPABILITIES
-from core.routing.anchors_ru import ANCHORS_BY_KIND
+from core.routing.anchors_ru import ANCHORS_BY_KIND, ANCHORS_RESEARCH
 from core.routing.capability_examples_ru import (
     CAPABILITY_COUNTER_EXAMPLES_RU,
     CAPABILITY_EXAMPLES_RU,
@@ -70,6 +70,9 @@ class RoutingDecision:
     needs_confirmation: bool              # флаг подтверждения опасного действия
     candidates: List[Tuple[str, float]] = field(default_factory=list)
     clarify_question: Optional[str] = None
+    #: Исследовательская миссия (research workflow §18). Решает роутер по
+    #: отдельному классу якорей; second-классификатор is_research_goal удалён.
+    is_research: bool = False
     trace: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -82,6 +85,7 @@ class RoutingDecision:
             "needs_confirmation": self.needs_confirmation,
             "candidates": [(name, round(score, 4)) for name, score in self.candidates],
             "clarify_question": self.clarify_question,
+            "is_research": self.is_research,
             "trace": self.trace,
         }
 
@@ -102,6 +106,7 @@ class RoutingDecision:
                 for name, score in (data.get("candidates") or [])
             ],
             clarify_question=data.get("clarify_question"),
+            is_research=bool(data.get("is_research", False)),
             trace=dict(data.get("trace") or {}),
         )
 
@@ -153,6 +158,14 @@ _UI_PHYSICAL_AUTOMATION_RE = re.compile(
 
 #: Исполняемые файлы в аргументах — запуск чужого кода (эскалация из safety.py).
 _EXECUTABLE_RE = re.compile(r"(?i)\.(exe|bat|cmd|ps1|vbs|js|jar|msi|scr)\b")
+
+#: Оформление/подтверждение заказа и submit в аргументах браузерных действий (1c).
+_FORM_SUBMIT_RE = re.compile(
+    r"(?i)(\bsubmit\b|place\s+order|checkout|оформ\w*\s+заказ|подтверд\w*\s+заказ|отправк\w*\s+форм\w*)"
+)
+
+#: Значения-аргументы, которые трактуются как URL перехода (аудит 1c).
+_URL_ARG_KEYS = {"url", "href", "link", "goto", "address"}
 
 # --------------------------------------------------------------------------- #
 #  Tier-0C: структурные паттерны с извлекаемыми аргументами (extraction)
@@ -227,6 +240,48 @@ def _args_text(args_hint: Optional[Dict[str, Any]]) -> str:
         elif isinstance(value, dict):
             parts.extend(str(v) for v in value.values())
     return " ".join(parts)
+
+
+def _url_fails_static_guard(url: str) -> bool:
+    """Статическая детерминированная часть проверки URL (аудит 1c).
+
+    Возвращает True, если URL заведомо не пройдёт assert_safe_url:
+    чужая схема, user:pass@, опасный порт, IP-литерал или localhost-имя
+    в зарезервированных диапазонах, пустой host. DNS-rebinding проверяет
+    core.network_guard при исполнении — сетевых вызовов в risk gate нет.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    if not re.match(r"(?i)^\w[\w+.-]*://", raw):
+        raw = "https://" + raw
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return True
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return True
+    if parsed.username or parsed.password:
+        return True
+    if parsed.port is not None and parsed.port in {21, 22, 23, 25, 110, 143, 445, 3389, 6379, 9200, 11211}:
+        return True
+    host = (parsed.hostname or "").strip().lower().strip("[]")
+    if not host:
+        return True
+    if host in ("localhost",) or host.endswith((".local", ".internal", ".lan")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # доменное имя — полную проверку делает network_guard
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+    )
 
 
 def assess_risk(
@@ -368,6 +423,34 @@ def assess_risk(
             level = max_level(level, "medium")
             reasons.append("операция с исполняемым файлом")
 
+    # 7b. Аргументы браузерных/UI-инструментов: платежи и submit, пароли,
+    # исполняемые файлы, URL мимо сетевой защиты (аудит 1c). Per-action
+    # override безопасных действий браузера НЕ снимает подтверждение,
+    # если содержимое аргументов эскалирует.
+    if args_hint and tool in _BROWSER_TOOLS:
+        if _SENSITIVE_DATA_RE.search(norm_args):
+            level = max_level(level, "high")
+            reasons.append("пароли или секреты в аргументах действия")
+        if _SENDING_FINANCE_RE.search(norm_args) or any(
+            _FORM_SUBMIT_RE.search(v) for v in _collect_arg_strings(args_hint)
+        ):
+            level = max_level(level, "high")
+            reasons.append("оплата, отправка формы или submit в аргументах действия")
+        for arg_val in _collect_arg_strings(args_hint):
+            if _EXECUTABLE_RE.search(arg_val):
+                level = max_level(level, "high")
+                reasons.append("загрузка или запуск исполняемого файла через браузер")
+        for key, value in (args_hint or {}).items():
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for val in values:
+                s = str(val or "").strip()
+                if not s:
+                    continue
+                is_url = bool(re.match(r"(?i)^https?://", s)) or str(key).casefold() in _URL_ARG_KEYS
+                if is_url and _url_fails_static_guard(s):
+                    level = max_level(level, "high")
+                    reasons.append("URL не проходит сетевую проверку (assert_safe_url)")
+
     needs_confirmation = level in ("high", "critical")
     if return_reasons:
         return level, needs_confirmation, reasons
@@ -393,6 +476,10 @@ class SemanticRouter:
         "погромче": ("action", "volume"),
         "тише": ("action", "volume"),
         "потише": ("action", "volume"),
+        "сделай громче": ("action", "volume"),
+        "сделай погромче": ("action", "volume"),
+        "сделай тише": ("action", "volume"),
+        "сделай потише": ("action", "volume"),
         "выключи звук": ("action", "volume"),
         "включи звук": ("action", "volume"),
         "без звука": ("action", "volume"),
@@ -448,6 +535,7 @@ class SemanticRouter:
         self._index_kinds: List[str] = []
         self._index_tools: List[Optional[str]] = []
         self._index_counter_for: List[Optional[str]] = []
+        self._index_research: List[bool] = []
         self._index_vectors: Optional[np.ndarray] = None
 
         # Пороги калибровки
@@ -504,11 +592,12 @@ class SemanticRouter:
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec
 
-    def _build_corpus(self) -> Tuple[List[str], List[str], List[Optional[str]], List[Optional[str]], str]:
+    def _build_corpus(self) -> Tuple[List[str], List[str], List[Optional[str]], List[Optional[str]], List[bool], str]:
         texts: List[str] = []
         kinds: List[str] = []
         tools: List[Optional[str]] = []
         counter_for: List[Optional[str]] = []
+        research: List[bool] = []
 
         # 1. Примеры возможностей (action / fresh_data)
         for tool_name, examples in CAPABILITY_EXAMPLES_RU.items():
@@ -518,6 +607,7 @@ class SemanticRouter:
                 kinds.append(kind)
                 tools.append(tool_name)
                 counter_for.append(None)
+                research.append(False)
 
         # 2. Контр-примеры (привязаны к инструменту для оттягивания ложных срабатываний метафор)
         for tool_name, counter_ex in CAPABILITY_COUNTER_EXAMPLES_RU.items():
@@ -526,6 +616,7 @@ class SemanticRouter:
                 kinds.append("chat")
                 tools.append(None)
                 counter_for.append(tool_name)
+                research.append(False)
 
         # 3. Семантические якоря (chat, question, mission, action-unsupported)
         for kind, anchors in ANCHORS_BY_KIND.items():
@@ -534,17 +625,27 @@ class SemanticRouter:
                 kinds.append(kind)
                 tools.append(None)
                 counter_for.append(None)
+                research.append(False)
+
+        # 4. Research-якоря (§18): класс mission + атрибут is_research.
+        # Решение о research-режиме принимает роутер, не keyword-классификатор.
+        for anchor in ANCHORS_RESEARCH:
+            texts.append(anchor)
+            kinds.append("mission")
+            tools.append(None)
+            counter_for.append(None)
+            research.append(True)
 
         # Контентный хеш для кэша
         corpus_hash = hashlib.sha256("###".join(texts).encode("utf-8")).hexdigest()
-        return texts, kinds, tools, counter_for, corpus_hash
+        return texts, kinds, tools, counter_for, research, corpus_hash
 
     def ensure_index(self) -> None:
         """Построение или загрузка кэшированного векторного индекса."""
         if self._index_ready:
             return
 
-        texts, kinds, tools, counter_for, corpus_hash = self._build_corpus()
+        texts, kinds, tools, counter_for, research, corpus_hash = self._build_corpus()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = self.cache_dir / f"routing_index_{corpus_hash[:16]}.npz"
 
@@ -556,6 +657,7 @@ class SemanticRouter:
                 self._index_kinds = kinds
                 self._index_tools = tools
                 self._index_counter_for = counter_for
+                self._index_research = research
                 self._index_ready = True
                 log.debug("Семантический индекс загружен из кэша (%d записей)", len(texts))
                 return
@@ -572,6 +674,7 @@ class SemanticRouter:
         self._index_kinds = kinds
         self._index_tools = tools
         self._index_counter_for = counter_for
+        self._index_research = research
         self._index_ready = True
         log.info("Семантический индекс сохранен в %s", cache_file)
 
@@ -670,6 +773,7 @@ class SemanticRouter:
 
         tool_scores: Dict[str, float] = {}
         kind_scores: Dict[str, float] = {}
+        research_score = 0.0
 
         for rank, idx in enumerate(top_k_idx):
             w = float(weights[rank])
@@ -684,6 +788,8 @@ class SemanticRouter:
                 kind_scores[act_k] = kind_scores.get(act_k, 0.0) + w * s
             else:
                 kind_scores[kd] = kind_scores.get(kd, 0.0) + w * s
+                if self._index_research[idx]:
+                    research_score += w * s
 
             # Штраф за попадание в контр-пример
             if cf is not None:
@@ -723,6 +829,17 @@ class SemanticRouter:
         trace["margin_agg"] = round(margin_agg, 4)
         trace["top_candidates"] = top_candidates_ui
 
+        # Research-атрибут миссии: research-якоря перевешивают обычные
+        # mission-якоря среди соседей (решение роутера, не keyword-гейт).
+        mission_score = kind_scores.get("mission", 0.0)
+        is_research = (
+            top1_kind == "mission"
+            and research_score > 0.0
+            and research_score > (mission_score - research_score)
+        )
+        trace["research_score"] = round(research_score, 4)
+        trace["is_research"] = is_research
+
         # Оценка риска с учетом предсказанного инструмента
         final_risk, final_needs_conf = assess_risk(top1_tool, None, raw)
 
@@ -738,6 +855,7 @@ class SemanticRouter:
                 risk=final_risk,
                 needs_confirmation=final_needs_conf,
                 candidates=top_candidates_ui,
+                is_research=is_research,
                 trace=trace,
             )
 
@@ -912,6 +1030,34 @@ def get_router() -> SemanticRouter:
 def route(text: str, ctx: Optional[RoutingContext] = None) -> RoutingDecision:
     """Единая точка входа в семантическую маршрутизацию."""
     return get_router().route(text, ctx)
+
+
+def split_compound_by_decision(text: str, llm_available: bool = False) -> List[str]:
+    """Разбиение составной команды по решению роутера (R1, аудит 1b).
+
+    Синтаксический сплиттер находит кандидатов по явным союзам («и»,
+    «потом», «затем»); разбиение допустимо ТОЛЬКО когда каждая часть сама
+    маршрутизируется роутером как самостоятельное действие (action/fresh_data,
+    включая unsupported-части kind=action без инструмента). Миссии, вопросы
+    и болтовня («напиши эссе о технологиях и обществе») не разбиваются —
+    союз в тексте сам по себе ничего не решает.
+    """
+    # Локальный импорт: split_compound_commands — чистый синтаксический
+    # сплиттер без решений; зависимость routing -> router.intent_router не
+    # создаёт цикла (intent_router ничего не импортирует из routing).
+    from core.router.intent_router import split_compound_commands
+
+    parts = split_compound_commands(text)
+    if len(parts) < 2:
+        return []
+    for part in parts:
+        part_decision = get_router().route(
+            part,
+            RoutingContext(llm_available=llm_available, allow_clarify=False),
+        )
+        if part_decision.kind not in ("action", "fresh_data"):
+            return []
+    return parts
 
 
 _FILE_TOOLS = {

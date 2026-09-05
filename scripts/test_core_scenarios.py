@@ -143,8 +143,12 @@ def main() -> int:
 
     # ------------------------------------------------------------------ #
     banner("СЦЕНАРИЙ 5: 'Изучи проект' -> research mission")
-    from core.research import is_research_goal
-    detected = is_research_goal("Изучи проект FastAPI и сравни с Flask")
+    from core.routing.semantic_router import RoutingContext
+    from core.routing.semantic_router import route as semantic_route
+    detected = semantic_route(
+        "Изучи проект FastAPI и сравни с Flask",
+        RoutingContext(llm_available=False, allow_clarify=False),
+    ).is_research
     m = run_goal("Изучи проект FastAPI и сравни с Flask", timeout=300)
     research_meta = (m.metadata.get("research") if m else None) or {}
     honest = bool(m and m.result and not _claims_done_falsely(m))

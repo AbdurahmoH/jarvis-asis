@@ -166,16 +166,19 @@ def test_p0_complex_background_mission(settings, fake_backend, tmp_path):
     должна уходить в фон, а «привет» — нет.
     """
     from core.model_router import estimate_complexity
-    from core.research import is_research_goal
+    from core.routing.semantic_router import RoutingContext
+    from core.routing.semantic_router import route as semantic_route
 
     goal_complex = "проанализируй содержимое папки и составь подробный отчёт о структуре"
     goal_simple = "привет"
 
-    # Сложная/исследовательская цель -> фон.
-    assert is_research_goal(goal_complex) or estimate_complexity(goal_complex).score >= 0.35
+    # Сложная/исследовательская цель -> фон (решение роутера, не keyword-гейт).
+    decision_complex = semantic_route(goal_complex, RoutingContext(llm_available=False, allow_clarify=False))
+    assert decision_complex.is_research or decision_complex.kind == "mission" or estimate_complexity(goal_complex).score >= 0.35
     # Простая -> синхронно.
+    decision_simple = semantic_route(goal_simple, RoutingContext(llm_available=False, allow_clarify=False))
     assert estimate_complexity(goal_simple).score < 0.35
-    assert is_research_goal(goal_simple) is False
+    assert decision_simple.is_research is False
 
 
 if __name__ == "__main__":

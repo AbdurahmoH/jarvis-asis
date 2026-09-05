@@ -117,3 +117,27 @@ def test_clarify_cycle_ttl_expiry():
     ), patch.object(orch._agent, "_answer_conversation", return_value=AgentOutcome(text="Привет!", mode="chat")):
         state = orch.handle_input("привет", channel="test")
         assert state.get("mode") in ("chat", "conversation", "fast")
+
+
+def test_clarify_question_uses_user_words_and_profile_addressing():
+    """R7: вопрос clarify — из слов пользователя; обращение — из профиля."""
+    from core.routing.semantic_router import SemanticRouter
+
+    # Обращение из профиля подставляется, если задано.
+    q_addr = SemanticRouter._build_clarify_question(
+        "окно браузера", [("close_app", 0.45), ("open_app", 0.42)],
+        addressing="Алекс",
+    )
+    assert q_addr.startswith("Алекс,"), q_addr
+    assert "окно браузера" in q_addr or "Браузера" in q_addr or "Окно" in q_addr
+
+    # Без обращения — обращение не выдумывается (констант «сэр» нет).
+    q_plain = SemanticRouter._build_clarify_question(
+        "окно браузера", [("close_app", 0.45), ("open_app", 0.42)],
+        addressing="",
+    )
+    assert not q_plain.startswith("Сэр"), q_plain
+    assert "уточните" in q_plain.lower()
+
+    # Объект вопроса — словами пользователя, не техописание инструмента.
+    assert "browser_bridge" not in q_addr and "close_app" not in q_addr

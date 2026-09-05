@@ -77,6 +77,8 @@ def test_offline_roles_share_one_local_backend_object(tmp_path: Path):
 
 def test_state_has_task_contract_and_evidence_slots():
     state = new_state("объясни энтропию")
-    assert state["intent"] == "web"
+    # R2 (позиция 2): keyword-классификатор удалён из new_state — intent
+    # проставляется оркестратором из решения semantic-роутера.
+    assert state["intent"] is None
     assert state["task_contract"] == {}
     assert state["evidence"] == []
