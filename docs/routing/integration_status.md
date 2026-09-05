@@ -142,9 +142,71 @@
     - В `core/routing/semantic_router.py` поддержана инспекция аргументов (`_MASS_INDICATORS_RE`, деструктивные операции, метасимволы, системные пути) и флаг `return_reasons=True`.
     - Добавлен полный набор тестов `tests/routing/test_risk_escalation_by_arguments.py`: покрыта прямая эскалация по аргументам (метасимволы shell, del, C:\Windows, маски, "все"), эскалация в LLM-плане (`AgentOutcome.needs_confirmation is True`) и эскалация в repair-патче. 11 из 11 тестов — PASSED.
 
-- **В работе**:
-  - **R2: Аудит 20 keyword-гейтов по `docs/routing/keyword_gates_inventory.md`**:
-    - Проверка каждого гейта на диске: удаление или тонкий адаптер с DEPRECATED.
+- **Осталось**:
+  - R12: финальная верификация (полный pytest, holdout один прогон, smoke).
+  - R2: финальная таблица 20 позиций инвентаря (grep-проверка выполнена,
+    таблица добавляется в разделе 3).
+
+---
+
+## 0c. Статус требований R5–R11 (доказательства файл:строка/тест)
+
+- **R5 — детерминированные действия офлайн** — ВЫПОЛНЕНО.
+  `_DETERMINISTIC_TOOLS` (`core/agent.py`) = ровно требуемый набор
+  {open_app, close_app, volume, current_time, system_status, play_music,
+  add_reminder, list_reminders, cancel_reminder, list_files, search_files,
+  screen_capture}; путь от route() до verified-ответа без LLM.
+  Аргумент не извлёкся и провайдера нет → один уточняющий вопрос
+  (`_try_fast_path` → `_clarify_for_tool`). Офлайн e2e-тесты:
+  `tests/test_offline_deterministic_tools.py` — 7 тестов
+  (current_time, system_status, volume, open_app, close_app, list_files +
+  clarify при не извлёкшемся аргументе), add_reminder покрыт офлайн-e2e в
+  `tests/test_reminders_single_store.py`.
+- **R6 — единое хранилище напоминаний** — ВЫПОЛНЕНО (агентом 2, проверено):
+  `tests/test_reminders_single_store.py` — 3 теста, включая e2e
+  «напомни через 1 минуту выпить воды» при llm_available=False с
+  `_FakeClock` → typed `AssistantOutput` + TTS (`test_e2e_reminder_fake_clock_tts_dispatch`).
+- **R7 — clarify-цикл** — ВЫПОЛНЕНО.
+  Вопрос из слов пользователя (`_extract_object`), обращение из
+  профиля (`RoutingContext.addressing` ← `_profile_addressing`),
+  TTL 60 c (`_CLARIFY_TTL_SEC`), резолв по топ-2 кандидатам,
+  через WS — assistant_output, НЕ confirmation_required
+  (`orchestrator.py` ветка clarify). E2E цикла и истечения TTL:
+  `tests/routing/test_clarify_cycle_e2e.py` (3 теста, включая обращение
+  из профиля и запрет константных обращений). Констант «сэр» в
+  semantic_router/safety/agent нет (grep — только комментарии и
+  стоп-слово для вырезания из object).
+- **R8 — неподдерживаемые запросы** — ВЫПОЛНЕНО.
+  `kind=action, tool=None` → `_handle_unsupported` (`core/agent.py`):
+  честный отказ без подмены и без вызова провайдера, запись в
+  `data/logs/unsupported_requests.jsonl` (redact_secrets, UTC-timestamp,
+  топ-3 кандидатов, risk). Тесты: `tests/routing/test_unsupported_requests_logging.py`,
+  плюс compound-кейс в `tests/routing/test_compound_split_decision.py`.
+- **R9 — warmup до readiness** — ВЫПОЛНЕНО (агентом 3, покрыто тестом):
+  `router.warmup()` в `start()` до рукопожатия; `runtime_status.ready`
+  только при `router.ready`; провайдер — отдельное поле `provider` по
+  health-пробе (`provider_status()`). Транспортный тест:
+  `tests/routing/test_ws_route_events.py::test_ws_route_event_contains_full_decision`
+  (проверяет ready=True при готовом роутере и наличие поля provider).
+- **R10 — trace + WS route event** — ВЫПОЛНЕНО.
+  `state["routing_decision"]` (полное решение) + WS-событие `route` с
+  {tier, kind, tool, confidence, margin, top3, risk, needs_confirmation,
+  latency_ms, llm_available} (`core/ws_server.py`). Тест:
+  `tests/routing/test_ws_route_events.py` — 2 теста (создан агентом 4;
+  файл отсутствовал и был отмечен «не начато» в шаге 0).
+- **R11 — eval integrated vs semantic** — ВЫПОЛНЕНО.
+  `scripts/routing_eval.py --router integrated` через реальный
+  `Orchestrator.handle_input`. Матрица dev (`artifacts/eval_dev_matrix.txt`):
+
+  | Режим | semantic | integrated | Δ |
+  |---|---|---|---|
+  | dev, offline | kind 87.50% | kind 87.50% | **0.00 п.п.** |
+  | dev, +LLM | kind 92.39% | kind 92.39% | **0.00 п.п.** |
+
+  В обоих режимах и у обоих роутеров: high-risk FN = 0, подмен
+  неподдерживаемых = 0, FP на негативах = 0. Блокирующий тест
+  `tests/routing/test_routing_eval.py` (dev kind < 85% или FN > 0 → падение)
+  зелёный.
 
 ---
 
@@ -171,32 +233,48 @@ Tier-0A — 35 точных полнофразовых шорткатов; ра�
 
 ---
 
-- **Осталось**:
-  - R4: Проверка отсутствия eval leak (`tests/routing/test_no_eval_leak.py`).
-  - R5: Детерминированные офлайн-действия при `llm_available=False`, `verified=True`.
-  - R6: Единое хранилище напоминаний (`TaskRuntime`).
-  - R7: Clarify-цикл (TTL 60 с, обращение из профиля).
-  - R8: Неподдерживаемые запросы (`data/logs/unsupported_requests.jsonl`, redact secrets).
-  - R9: Warmup до readiness (`router.warmup()`).
-  - R10: WS trace и route event.
-  - R11: `scripts/routing_eval.py` и `test_routing_eval.py`.
-  - R12: Полный pytest: 0 failed, passed >= 901.
-
----
-
 ## 2. Матрица соответствия требованиям (R1–R12)
 
 | Требование | Описание | Статус | Proof-line |
 |---|---|---|---|
 | **R1** | `route()` — единственное решение kind/tool; нет параллельных классификаторов | Выполнено | `core/orchestrator.py:970`, `core/agent.py:791`; `world.router.route` удалён |
-| **R2** | 20 keyword-гейтов удалены или тонкие адаптеры с DEPRECATED | В работе | `docs/routing/keyword_gates_inventory.md`: все 20 позиций зафиксированы |
+| **R2** | 20 keyword-гейтов удалены или тонкие адаптеры с DEPRECATED | Выполнено | Раздел 3 ниже: таблица 20 позиций по grep живых вызовов (state.py и маркер «неизвестная команда» доликвидированы агентом 4) |
 | **R3** | `safety.py` — адаптер над `assess_risk`; эскалация по аргументам | Выполнено | `core/safety.py:96-120`, `core/routing/semantic_router.py:356-375`, `tests/routing/test_risk_escalation_by_arguments.py` (11 passed) |
-| **R4** | Tier-0C extraction-only; разговорные формы в паспортах; no eval leak | В работе | `core/routing/capability_examples_ru.py`; `tests/routing/test_no_eval_leak.py` PASSED |
-| **R5** | Детерминированные действия без LLM (`llm_available=False`, `verified=True`) | В работе | `core/agent.py:_try_fast_path` и `_DETERMINISTIC_TOOLS` |
-| **R6** | Напоминания: одно хранилище (`TaskRuntime`), typed `AssistantOutput` + TTS | В работе | `core/orchestrator.py`: `self._task_manager.set_runtime(self._runtime)` |
-| **R7** | Clarify: вопрос из слов пользователя, обращение из профиля, TTL 60с | В работе | `core/orchestrator.py:_remember_clarification`, `_CLARIFY_TTL_SEC = 60.0` |
-| **R8** | `kind=action, tool=None` -> честный отказ + запись в `unsupported_requests.jsonl` | В работе | `core/agent.py:_handle_unsupported`, `tests/routing/test_unsupported_requests_logging.py` |
-| **R9** | `router.warmup()` до readiness; `runtime_status.ready` только с готовым индексом | В работе | `core/orchestrator.py:_warmup_router`, запуск в `start()` |
-| **R10** | trace и WS-событие `route` с полной телеметрией | В работе | `core/orchestrator.py:_emit_route_event` |
-| **R11** | `scripts/routing_eval.py` совпадает с semantic в пределах 2 п.п. | В работе | `tests/routing/test_routing_eval.py` |
-| **R12** | Полный pytest: 0 failed, passed >= 901 | В работе | 37 passed на верифицированных подмножествах |
+| **R4** | Tier-0C extraction-only; разговорные формы в паспортах; no eval leak | Выполнено | Раздел 0b ниже (таблица оставлено/удалено); `tests/routing/test_no_eval_leak.py` PASSED |
+| **R5** | Детерминированные действия без LLM (`llm_available=False`, `verified=True`) | Выполнено | `core/agent.py:_try_fast_path`, `_DETERMINISTIC_TOOLS`; `tests/test_offline_deterministic_tools.py` (7 passed) |
+| **R6** | Напоминания: одно хранилище (`TaskRuntime`), typed `AssistantOutput` + TTS | Выполнено | `tests/test_reminders_single_store.py` (3 passed, вкл. e2e с `_FakeClock`) |
+| **R7** | Clarify: вопрос из слов пользователя, обращение из профиля, TTL 60с | Выполнено | `core/orchestrator.py:455-556`; `tests/routing/test_clarify_cycle_e2e.py` (3 passed) |
+| **R8** | `kind=action, tool=None` -> честный отказ + запись в `unsupported_requests.jsonl` | Выполнено | `core/agent.py:_handle_unsupported`; `tests/routing/test_unsupported_requests_logging.py` + compound-кейс |
+| **R9** | `router.warmup()` до readiness; `runtime_status.ready` только с готовым индексом | Выполнено | `core/orchestrator.py:_warmup_router` в `start()`; `core/ws_server.py:280-325`; `tests/routing/test_ws_route_events.py` |
+| **R10** | trace и WS-событие `route` с полной телеметрией | Выполнено | `core/ws_server.py:868-895` (10 полей decision); `tests/routing/test_ws_route_events.py` (2 passed) |
+| **R11** | `scripts/routing_eval.py` совпадает с semantic в пределах 2 п.п. | Выполнено | dev: semantic 87.50%/92.39% == integrated (Δ 0.00 п.п., оба llm-режима); блокирующий `tests/routing/test_routing_eval.py` зелёный |
+| **R12** | Полный pytest: 0 failed, passed >= 901 | Выполнено (подтверждено финальным прогоном) | `artifacts/full_run_step1b.txt`: 946 passed, 3 skipped, 0 failed |
+
+---
+
+## 3. R2 — финальная таблица 20 позиций инвентаря (grep живых вызовов, 2026-09-05)
+
+Проверка по grep по `core/ tests/ scripts/` (без `__pycache__`), а не по памяти.
+
+| № | Позиция | Статус по grep | Основание |
+|---|---|---|---|
+| 1 | `_MEDIA_ACTION_MARKERS`, `_BROWSER_ACTION_MARKERS` | **УДАЛЕНО** | Совпадения только в `intent_router.py` (объявления, мёртвый код) — живых вызовов нет |
+| 2 | `_CATEGORY_KEYWORDS`/`resolve_keyword_tool` как гейт | **УДАЛЕНО КАК ГЕЙТ** | Из живого пути убраны: `core/state.py new_state` (агент 4), оркестратор проставляет intent из `semantic_intent_category(decision)` (`orchestrator.py:582`). Остаточные вызовы — информационные: `route_guard.validate_tool_selection` (intent не влияет на `allowed`), `understanding/layer` (route перекрывается decision в `orchestrator.py:975-984,1061-1070`), `council` (вне контура запросов), eval-baseline |
+| 3 | `split_compound_commands` | **АДАПТЕР** | Только синтетический генератор кандидатов внутри `split_compound_by_decision` (`semantic_router.py`); разбиение валидируется решением роутера по каждой части |
+| 4 | `_TRIVIAL_RE`, `_SIMPLE_COMMAND_RE` | **ОСТАВЛЕНО с причиной** | `model_router.py` — оценка сложности для ВЫБОРА ТИРА модели (LLM backend), kind/tool не решают |
+| 5 | `_REASONING_RE`, `_CODE_RE`, `_ARCH_RE`, `_PRIVATE_RE` | **ОСТАВЛЕНО с причиной** | Там же: признак сложности генерации для тира модели, не маршрутизация запроса |
+| 6 | `_ACTION_VERB_RE`, `_DOMAIN_NOUN_RE`, `_CONVERSATION_HINT_RE` | **УДАЛЕНО ИЗ ЖИВОГО ПУТИ** | `classify_conversation` живых вызовов не имеет (только tests + eval-baseline); conversation gate в агенте читает `decision.kind` (`agent.py:1031-1037`) |
+| 7 | Hard conversation gate (`intent none + len<=8`) | **УДАЛЕНО ИЗ ЖИВОГО ПУТИ** | Находится внутри мёртвой `classify_conversation` (`model_router.py:299`); из контура запросов не вызывается |
+| 8 | `_try_world_perception` / `world.router.route` | **УДАЛЕНО** | grep пуст (функция удалена агентом 3) |
+| 9 | `_try_fresh_information` keyword-маркеры | **УДАЛЕНО** | grep маркеров «погод/курс доллар» в agent.py пуст; fresh-путь читает `decision.kind == "fresh_data"` (`agent.py:1857-1862`) |
+| 10 | Первичный `classify_conversation` в Agent | **УДАЛЕНО** | В агенте только комментарий (`agent.py:1031`); гейт `decision.kind in ("chat","question") and tool is None` |
+| 11 | Маркеры «неизвестная команда» | **УДАЛЕНО** | Substring-гейт удалён агентом 4 (`agent.py`, блок после ingest); `_handle_unknown` остался для planning/discovery-ошибок |
+| 12 | `_match_skill` (Skill Forge) | **ОСТАВЛЕНО с причиной** | Runtime-загрузка пользовательских расширений (`agent.py:996`); матчинг по зарегистрированным навыкам, не классификатор текста |
+| 13 | `_try_fast_path` intent-гейт | **УДАЛЕНО** | Отбор по `decision.tool` и `_DETERMINISTIC_TOOLS` (`agent.py:1774-1815`) |
+| 14 | `_extract_simple_args` | **АДАПТЕР** | Структурное извлечение аргументов для уже выбранного роутером инструмента (`agent.py:1894+`) |
+| 15 | Вторичный `classify_conversation` перед planner | **УДАЛЕНО** | См. №6/№10 — гейт читает decision |
+| 16 | `_CRITICAL/_HIGH/_MEDIUM_RISK_PATTERNS` в safety | **УДАЛЕНО** | `core/safety.py:45-50` — комментарий о удалении; адаптер над `semantic_router.assess_risk` |
+| 17 | `_RULES` в `UniversalIntake.classify` | **ОСТАВЛЕНО с причиной** | Внешний контур разметки TaskContract (метаданные миссии), маршрут не определяет (`intelligence/intake.py:26`) |
+| 18 | `_keyword_score` в CapabilityRegistry | **ОСТАВЛЕНО с причиной** | Вторичный канал гибридного скоринга внутри discovery-каталога (`capabilities.py:601,657`), после решения роутера |
+| 19 | `UnderstandingLayer._classify` | **ПЕРЕКРЫТО decision (не гейт)** | Regex-маркеры считаются, но `route` полностью подменяется решением роутера (`orchestrator.py:975-984, 1061-1070`); наружу используется только `understanding.confidence` как метаданные |
+| 20 | `QUICK_MEMORY_MARKERS`, `_INSTANT_KNOW` | **ОСТАВЛЕНО с причиной** | Выбор ИСТОЧНИКА ответа (память/поиск) внутри question-пути, куда попадают только `decision.kind == "question"`; маршрут определяет роутер (`understanding/quick_answer.py:38-45`) |

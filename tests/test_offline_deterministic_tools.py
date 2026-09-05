@@ -101,3 +101,13 @@ def test_offline_list_files(offline_agent, tmp_path):
     assert outcome.mode == "fast_path"
     assert outcome.action_result is not None
     assert outcome.action_result.ok is True
+
+
+def test_offline_clarify_when_args_missing(offline_agent, monkeypatch):
+    """R5: аргумент не извлёкся и провайдера нет — один уточняющий вопрос,
+    а не поход в планировщик и не ошибка."""
+    monkeypatch.setattr(offline_agent, "_llm_available_cached", lambda: False)
+    outcome = offline_agent.execute("поставь напоминание")
+    assert outcome.mode == "clarification"
+    assert outcome.tool_used is None
+    assert "напомнить" in outcome.text.lower() or "о чём" in outcome.text.lower()
