@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import onnxruntime as ort
@@ -229,7 +229,12 @@ def _args_text(args_hint: Optional[Dict[str, Any]]) -> str:
     return " ".join(parts)
 
 
-def assess_risk(tool: Optional[str] = None, args_hint: Optional[Dict[str, Any]] = None, text: str = "") -> Tuple[str, bool]:
+def assess_risk(
+    tool: Optional[str] = None,
+    args_hint: Optional[Dict[str, Any]] = None,
+    text: str = "",
+    return_reasons: bool = False,
+) -> Union[Tuple[str, bool], Tuple[str, bool, List[str]]]:
     """Независимая оценка риска действия.
 
     Гарантирует 0 False Negatives для деструктивных, системных и приватных операций
@@ -356,11 +361,16 @@ def assess_risk(tool: Optional[str] = None, args_hint: Optional[Dict[str, Any]] 
         if _DESTRUCTIVE_ACTIONS_RE.search(arg_val):
             level = max_level(level, "high")
             reasons.append("аргумент содержит деструктивную операцию")
+        if _MASS_INDICATORS_RE.search(arg_val):
+            level = max_level(level, "high")
+            reasons.append("массовая операция в аргументах инструмента")
         if _EXECUTABLE_RE.search(arg_val) and level == "low":
             level = max_level(level, "medium")
             reasons.append("операция с исполняемым файлом")
 
     needs_confirmation = level in ("high", "critical")
+    if return_reasons:
+        return level, needs_confirmation, reasons
     return level, needs_confirmation
 
 

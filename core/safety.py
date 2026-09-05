@@ -108,9 +108,10 @@ def assess_risk(goal: str = "", tool: Optional[str] = None,
             reasons.append(why)
 
     # 1) Единый источник: текст цели + аргументы (semantic_router).
-    text_level, _ = routing_assess_risk(tool, arguments, goal)
+    text_level, _, routing_reasons = routing_assess_risk(tool, arguments, goal, return_reasons=True)
     if _LEVEL_ORDER.get(text_level, 0) > 0:
-        bump(RiskLevel(text_level), "риск цели/аргументов по семантической оценке")
+        detail_reason = "; ".join(routing_reasons) if routing_reasons else "риск цели/аргументов по семантической оценке"
+        bump(RiskLevel(text_level), detail_reason)
 
     # 2) Паспорт инструмента.  UI/browser capabilities publish their maximum
     # risk in the registry, but Risk Gate evaluates the concrete action.  Safe
