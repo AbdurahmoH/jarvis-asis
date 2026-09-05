@@ -26,7 +26,8 @@ async def main():
 
     got = []
     try:
-        async with websockets.connect("ws://127.0.0.1:8772") as ws:  # type: ignore
+        async with websockets.connect("ws://127.0.0.1:8772",
+                                      origin="http://localhost:1420") as ws:  # type: ignore
             first = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
             print("GREETING:", first)
             await ws.send(json.dumps({"type": "command", "text": "Привет, кратко представься"}))

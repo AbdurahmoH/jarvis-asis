@@ -30,13 +30,15 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import re
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional, Set
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from config import load_config
@@ -98,6 +100,10 @@ _DEFAULT_ALLOWED_ORIGINS = frozenset({
     "https://tauri.localhost",
 })
 
+#: S2: сколько ждать ``{"type":"auth"}`` от клиента. До этого принимается
+#: только ``ping``, поэтому окно короткое.
+_AUTH_TIMEOUT_SEC = 5.0
+
 # Маппинг статусов миссии -> entity state фронтенда
 _STATUS_TO_STATE = {
     "queued": "thinking",
@@ -143,7 +149,19 @@ class JarvisWSServer:
         self._host = host
         self._port = port
         self._auth_token = auth_token
-        self._allowed_origins = set(allowed_origins or set())
+        # S2: дефолт — явный список, а не пустое множество. Пустое множество
+        # раньше означало «Origin не проверяем» (fail-open); теперь оно
+        # означает «не пускать никого», поэтому подставить его по умолчанию
+        # нельзя — сервер стал бы неработоспособным вместо небезопасного.
+        self._allowed_origins = set(
+            allowed_origins if allowed_origins is not None else _DEFAULT_ALLOWED_ORIGINS
+        )
+        if not auth_token:
+            log.warning(
+                "JarvisWSServer создан без auth_token: мост принимает команды от "
+                "любого локального процесса. Продуктовый вход (run_server) такой "
+                "конфигурации не допускает."
+            )
         self._max_messages_per_window = max(1, int(max_messages_per_window))
         self._rate_window_sec = max(1.0, float(rate_window_sec))
         self._authorized_clients: Set[Any] = set()
@@ -516,28 +534,59 @@ class JarvisWSServer:
         ]
 
     def _origin_allowed(self, ws: Any) -> bool:
+        """S2: fail-closed. Пустой список — не «всё разрешено», а «ничего».
+
+        Было наоборот: ``if not self._allowed_origins: return True``. Любая
+        конфигурация, где список origins не задан (в том числе прямое
+        конструирование сервера в коде), открывала мост для страницы из
+        браузера. Единственный источник дефолта — ``_DEFAULT_ALLOWED_ORIGINS``,
+        и он подставляется в конструкторе явно.
+        """
         if not self._allowed_origins:
-            return True
+            log.error("WS: список разрешённых Origin пуст — соединение отклонено")
+            return False
         headers = getattr(ws, "request_headers", {}) or {}
         origin = headers.get("Origin") if hasattr(headers, "get") else None
         return bool(origin and origin in self._allowed_origins)
 
     async def _authenticate(self, ws: Any) -> bool:
+        """S2: аутентификация до любой полезной команды.
+
+        Принимается ровно два способа: заголовок ``Authorization: Bearer`` и
+        первое сообщение ``{"type":"auth","token":…}``. Путь ``?token=`` УДАЛЁН
+        (S2): query string попадает в access-логи, историю и телеметрию прокси.
+        До успешной аутентификации разрешён только ``ping`` — всё остальное
+        закрывает соединение.
+        """
+        expected = self._auth_token or ""
         headers = getattr(ws, "request_headers", {}) or {}
         auth = headers.get("Authorization", "") if hasattr(headers, "get") else ""
-        if auth == f"Bearer {self._auth_token}":
-            return True
-        raw_path = str(getattr(ws, "path", "") or "")
-        query_token = parse_qs(urlparse(raw_path).query).get("token", [""])[0]
-        if query_token == self._auth_token:
+        if hmac.compare_digest(str(auth or ""), f"Bearer {expected}"):
             return True
         await ws.send(json.dumps({"type": "auth_required"}))
-        try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
-            message = json.loads(raw)
-        except Exception:
-            return False
-        return message.get("type") == "auth" and message.get("token") == self._auth_token
+        deadline = time.monotonic() + _AUTH_TIMEOUT_SEC
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                message = json.loads(raw)
+            except Exception:
+                return False
+            if not isinstance(message, dict):
+                return False
+            mtype = str(message.get("type") or "").lower()
+            if mtype == "ping":
+                await ws.send(json.dumps({"type": "pong"}))
+                continue
+            if mtype != "auth":
+                await ws.send(json.dumps(
+                    {"type": "error", "message": "authentication required"}))
+                return False
+            token = message.get("token")
+            return bool(isinstance(token, str)
+                        and hmac.compare_digest(token, expected))
 
     def _rate_allowed(self, ws: Any) -> bool:
         now = time.monotonic()
@@ -1363,7 +1412,14 @@ class JarvisWSServer:
 
 
 def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
-    """Точка входа для автономного WS-сервера (без REPL)."""
+    """Точка входа для автономного WS-сервера (без REPL).
+
+    S2: аутентификация обязательна. Токен берётся из ``JARVIS_WS_TOKEN``, иначе
+    из зашифрованного хранилища ``data/security/ws-token.dpapi`` (создаётся при
+    первом запуске). Без токена сервер стартует ТОЛЬКО по явному
+    ``JARVIS_WS_DEV_NOAUTH=1`` и печатает громкое предупреждение; если токен
+    недоступен и флага нет — процесс не стартует.
+    """
     if not _HAS_WS:
         raise RuntimeError("websockets не установлен")
     settings: Settings = load_config()
@@ -1373,14 +1429,25 @@ def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     except Exception as exc:
         log.warning("Автопрофиль локальной модели пропущен: %s", exc)
     settings.ensure_directories()
+    from core.security.ws_token import ENV_DEV_NOAUTH, resolve_server_token
+
+    try:
+        auth_token, token_mode = resolve_server_token(settings)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"WS-сервер не запущен: нет токена аутентификации ({exc}). "
+            f"Задайте JARVIS_WS_TOKEN или (только для разработки) {ENV_DEV_NOAUTH}=1."
+        ) from exc
     orch = Orchestrator(settings)
     configured_origins = {
         item.strip().rstrip("/")
         for item in os.environ.get("JARVIS_ALLOWED_ORIGINS", "").split(",")
         if item.strip()
     }
+    log.info("WS-сервер: аутентификация=%s, origins=%d",
+             token_mode, len(configured_origins or _DEFAULT_ALLOWED_ORIGINS))
     server = JarvisWSServer(orch, host=host, port=port,
-                            auth_token=os.environ.get("JARVIS_WS_TOKEN") or None,
+                            auth_token=auth_token,
                             allowed_origins=configured_origins or set(_DEFAULT_ALLOWED_ORIGINS))
     server.start()
     try:
@@ -1390,5 +1457,24 @@ def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         server.shutdown()
 
 
+def _print_ws_token() -> int:
+    """``--print-ws-token``: выдать токен лаунчеру (одна строка в stdout).
+
+    Используется Tauri-лаунчером один раз при старте: он читает stdout и
+    отдаёт значение webview по ``invoke("ws_auth_token")``. Так токен не
+    попадает ни в URL, ни в аргументы командной строки backend-процесса.
+    """
+    from core.security.ws_token import load_or_create_token
+
+    try:
+        print(load_or_create_token(load_config()), flush=True)
+    except RuntimeError as exc:
+        print(f"ws-token error: {exc}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
+    if "--print-ws-token" in sys.argv[1:]:
+        raise SystemExit(_print_ws_token())
     run_server()

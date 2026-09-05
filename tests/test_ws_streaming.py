@@ -229,7 +229,9 @@ def test_sync_pair_single_stable_id():
     async def _run():
         server = _serve(SyncPairOrchestrator(), port=8805)
         try:
-            async with websockets.connect("ws://127.0.0.1:8805") as ws:  # type: ignore
+            # S2: проверка Origin fail-closed — клиент обязан его передать.
+            async with websockets.connect("ws://127.0.0.1:8805",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 await ws.recv()  # приветствие state:idle
                 await ws.send(json.dumps({"type": "command", "text": "первый"}))
                 ev1 = await _collect(ws, 5)
@@ -256,8 +258,10 @@ def test_parallel_commands_do_not_mix():
     async def _run():
         server = _serve(SyncPairOrchestrator(delay=0.4), port=8806)
         try:
-            async with websockets.connect("ws://127.0.0.1:8806") as ws1, \
-                       websockets.connect("ws://127.0.0.1:8806") as ws2:  # type: ignore
+            async with websockets.connect("ws://127.0.0.1:8806",
+                                         origin="http://localhost:1420") as ws1, \
+                       websockets.connect("ws://127.0.0.1:8806",
+                                         origin="http://localhost:1420") as ws2:  # type: ignore
                 await ws1.recv()
                 await ws2.recv()
                 await ws1.send(json.dumps({"type": "command", "text": "задача А"}))
@@ -290,7 +294,8 @@ def test_ws_streaming_sequence(stream_backend, settings):
 
     async def _run():
         try:
-            async with websockets.connect("ws://127.0.0.1:8807") as ws:  # type: ignore
+            async with websockets.connect("ws://127.0.0.1:8807",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 await ws.recv()
                 await ws.send(json.dumps({"type": "command", "text": "привет"}))
                 return await _collect(ws, 8)
@@ -342,7 +347,8 @@ def test_mission_streaming_via_task_events(stream_backend, settings):
 
     async def _run():
         try:
-            async with websockets.connect("ws://127.0.0.1:8809") as ws:  # type: ignore
+            async with websockets.connect("ws://127.0.0.1:8809",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 await ws.recv()
                 await ws.send(json.dumps({"type": "command", "text": goal}))
                 # ACK миссии — тоже start/end пара; ждём конец, у которого
@@ -392,7 +398,8 @@ def test_provider_failure_friendly_and_fast(dead_backend, settings):
 
     async def _run():
         try:
-            async with websockets.connect("ws://127.0.0.1:8808") as ws:  # type: ignore
+            async with websockets.connect("ws://127.0.0.1:8808",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 await ws.recv()
                 t0 = time.time()
                 await ws.send(json.dumps({"type": "command", "text": "привет"}))

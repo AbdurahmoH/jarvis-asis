@@ -45,7 +45,9 @@ def test_ws_route_event_contains_full_decision(settings):
         server = _make_ready_orchestrator(settings, 8812)
         server.start()
         try:
-            async with websockets.connect("ws://127.0.0.1:8812") as ws:  # type: ignore
+            # S2: проверка Origin fail-closed — клиент обязан его передать.
+            async with websockets.connect("ws://127.0.0.1:8812",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 idle = json.loads(await ws.recv())
                 assert idle["type"] == "state", idle
                 status = json.loads(await ws.recv())
@@ -90,7 +92,8 @@ def test_ws_route_event_carries_top3_and_margin(settings):
         server = _make_ready_orchestrator(settings, 8813)
         server.start()
         try:
-            async with websockets.connect("ws://127.0.0.1:8813") as ws:  # type: ignore
+            async with websockets.connect("ws://127.0.0.1:8813",
+                                          origin="http://localhost:1420") as ws:  # type: ignore
                 await ws.recv()  # state idle
                 await ws.recv()  # runtime_status
                 await ws.send(json.dumps({"type": "command", "text": "открой блокнот"}))

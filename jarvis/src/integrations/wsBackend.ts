@@ -37,6 +37,27 @@ export interface CloudSettingsPatch {
 
 type Listener = (event: BackendEvent) => void;
 type SocketFactory = (url: string) => WebSocket;
+/** S2: источник токена WS-аутентификации. null — токен недоступен. */
+export type TokenProvider = () => Promise<string | null>;
+
+/**
+ * S2: токен приходит из Tauri-лаунчера по `invoke("ws_auth_token")`.
+ *
+ * Не из URL и не из query string: адрес соединения попадает в логи, в историю
+ * и в телеметрию, а токен — это полный доступ к командам, экрану и настройкам.
+ * В браузере (vite dev без Tauri) команды нет — возвращаем null, и тогда
+ * сервер обязан быть запущен с JARVIS_WS_DEV_NOAUTH=1, иначе он закроет
+ * соединение сам.
+ */
+export const tauriTokenProvider: TokenProvider = async () => {
+  try {
+    const core = await import('@tauri-apps/api/core');
+    const token = await core.invoke<string>('ws_auth_token');
+    return typeof token === 'string' && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+};
 
 type SettingsRequest = {
   kind: 'get' | 'save';
@@ -99,13 +120,20 @@ export class WebSocketBackend implements BackendAdapter {
 
   private readonly url: string;
   private readonly socketFactory: SocketFactory;
+  private readonly tokenProvider: TokenProvider;
+  /** Токен запрашивается у лаунчера один раз на процесс. */
+  private tokenPromise: Promise<string | null> | null = null;
+  /** Отправка кадра auth текущего соединения; send() ждёт именно её. */
+  private authSent: Promise<void> | null = null;
 
   constructor(
     url: string,
     socketFactory: SocketFactory = (endpoint) => new WebSocket(endpoint),
+    tokenProvider: TokenProvider = tauriTokenProvider,
   ) {
     this.url = url;
     this.socketFactory = socketFactory;
+    this.tokenProvider = tokenProvider;
   }
 
   isConnected(): boolean {
@@ -211,6 +239,10 @@ export class WebSocketBackend implements BackendAdapter {
 
   private async send(payload: object): Promise<void> {
     const socket = await this.connect();
+    // S2: connect() возвращается сразу, если сокет уже OPEN, поэтому порядок
+    // кадров держится на отдельном ожидании аутентификации — иначе команда,
+    // отправленная в том же тике, что и open, опередила бы кадр auth.
+    if (this.authSent) await this.authSent;
     if (socket.readyState !== WebSocket.OPEN) {
       throw socketError('соединение ещё не готово');
     }
@@ -232,17 +264,39 @@ export class WebSocketBackend implements BackendAdapter {
     });
 
     socket.onopen = () => {
-      this.connected = true;
-      this.reconnectAttempt = 0;
-      this.resolveConnection?.(socket);
-      this.clearConnectionPromise();
-      for (const listener of this.connectionListeners) listener(true);
+      // S2: кадр аутентификации уходит ПЕРВЫМ. Промис ставится синхронно в
+      // onopen, поэтому любой send() в том же тике его дождётся.
+      this.authSent = this.authenticate(socket);
+      void this.authSent.then(() => {
+        this.connected = true;
+        this.reconnectAttempt = 0;
+        this.resolveConnection?.(socket);
+        this.clearConnectionPromise();
+        for (const listener of this.connectionListeners) listener(true);
+      });
     };
     socket.onmessage = (event) => this.handleMessage(event.data);
     socket.onerror = () => this.failConnection('не удалось подключиться к локальному backend');
     socket.onclose = () => this.failConnection('соединение с локальным backend закрыто');
 
     return this.connectPromise;
+  }
+
+  /**
+   * S2: отправляет `{type:"auth", token}` до любого другого кадра.
+   *
+   * Если токен недоступен (браузер без Tauri), кадр не отправляется: решение
+   * остаётся за сервером — он либо запущен с JARVIS_WS_DEV_NOAUTH=1, либо
+   * закроет соединение с кодом 1008. Клиент не притворяется авторизованным.
+   */
+  private async authenticate(socket: WebSocket): Promise<void> {
+    if (!this.tokenPromise) {
+      this.tokenPromise = this.tokenProvider().catch(() => null);
+    }
+    const token = await this.tokenPromise;
+    if (!token) return;
+    if (socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'auth', token }));
   }
 
   private clearConnectionPromise(): void {
@@ -259,6 +313,7 @@ export class WebSocketBackend implements BackendAdapter {
     this.rejectConnection?.(error);
     this.clearConnectionPromise();
     this.socket = null;
+    this.authSent = null;
     const wasConnected = this.connected;
     this.connected = false;
     this.emit({

@@ -40,15 +40,31 @@ class FakeSocket {
 }
 
 const { WebSocketBackend } = await import('../src/integrations/wsBackend.ts');
-const transport = new WebSocketBackend('ws://127.0.0.1:8771', (url) => new FakeSocket(url) as unknown as WebSocket);
+
+// S2: токен выдаёт лаунчер (в приложении — через invoke("ws_auth_token")).
+// Провайдер асинхронный намеренно: тест проверяет, что кадр auth уходит первым
+// даже когда токен приходит позже открытия сокета.
+const transport = new WebSocketBackend(
+  'ws://127.0.0.1:8771',
+  (url) => new FakeSocket(url) as unknown as WebSocket,
+  async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    return 'test-ws-token';
+  },
+);
 const events: BackendEvent[] = [];
 const unsubscribe = transport.subscribeToEvents((event) => events.push(event));
 const socket = FakeSocket.instances[0];
 assert.equal(socket.url, 'ws://127.0.0.1:8771');
+// Токен не может оказаться в URL: он уходит только кадром auth.
+assert.equal(socket.url.includes('token'), false);
 socket.open();
 
+// Команда отправлена сразу после open, не дожидаясь токена: она обязана
+// оказаться ПОСЛЕ кадра аутентификации.
 await transport.sendCommand('проверочная команда', [] as AttachedFile[]);
-assert.deepEqual(JSON.parse(socket.sent[0]), { type: 'command', text: 'проверочная команда' });
+assert.deepEqual(JSON.parse(socket.sent[0]), { type: 'auth', token: 'test-ws-token' });
+assert.deepEqual(JSON.parse(socket.sent[1]), { type: 'command', text: 'проверочная команда' });
 assert.equal(events[0].type, 'event:command');
 
 socket.receive({ type: 'state', state: 'thinking' });
@@ -80,7 +96,7 @@ const save = transport.updateCloudSettings({
   api_key: 'test-key-only',
 });
 await new Promise<void>((resolve) => setTimeout(resolve, 0));
-assert.deepEqual(JSON.parse(socket.sent[1]), {
+assert.deepEqual(JSON.parse(socket.sent[2]), {
   type: 'settings:update',
   settings: {
     provider: 'openrouter',
@@ -108,16 +124,40 @@ assert.deepEqual(await save, {
   api_key_masked: '••••only',
 });
 assert.equal(JSON.stringify(events).includes('test-key-only'), false);
+// Токен не утекает ни в ленту событий, ни в payload настроек.
+assert.equal(JSON.stringify(events).includes('test-ws-token'), false);
 
 await transport.answerConfirmation('confirm-1', false);
-assert.deepEqual(JSON.parse(socket.sent[2]), {
+assert.deepEqual(JSON.parse(socket.sent[3]), {
   type: 'confirm',
   confirmation_id: 'confirm-1',
   approve: false,
 });
 
 await transport.hotkeyPressed();
-assert.deepEqual(JSON.parse(socket.sent[3]), { type: 'hotkey_pressed' });
+assert.deepEqual(JSON.parse(socket.sent[4]), { type: 'hotkey_pressed' });
+
+// Кадр auth отправлен ровно один раз за соединение.
+assert.equal(socket.sent.filter((raw) => JSON.parse(raw).type === 'auth').length, 1);
 
 unsubscribe();
-console.log('wsBackend: command, response, confirmation and masked settings passed');
+
+// ---------------------------------------------------------------------------
+// S2 (dev): токена нет (браузер без Tauri) — клиент НЕ притворяется
+// авторизованным и не отправляет пустой auth. Решение остаётся за сервером:
+// он либо запущен с JARVIS_WS_DEV_NOAUTH=1, либо закроет соединение.
+// ---------------------------------------------------------------------------
+const devTransport = new WebSocketBackend(
+  'ws://127.0.0.1:8771',
+  (url) => new FakeSocket(url) as unknown as WebSocket,
+  async () => null,
+);
+const devUnsubscribe = devTransport.subscribeToEvents(() => {});
+const devSocket = FakeSocket.instances[1];
+devSocket.open();
+await devTransport.hotkeyPressed();
+assert.deepEqual(JSON.parse(devSocket.sent[0]), { type: 'hotkey_pressed' });
+assert.equal(devSocket.sent.some((raw) => JSON.parse(raw).type === 'auth'), false);
+devUnsubscribe();
+
+console.log('wsBackend: auth-first frame, command, response, confirmation and masked settings passed');

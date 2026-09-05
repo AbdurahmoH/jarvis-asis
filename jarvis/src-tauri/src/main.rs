@@ -19,6 +19,68 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 struct BackendProcess(Mutex<Option<Child>>);
 
+/// S2: WS-токен, полученный от backend один раз за запуск лаунчера.
+///
+/// Хранится только в памяти процесса и отдаётся webview по `invoke`, а не
+/// параметром URL: адрес соединения попадает в логи и историю, токен — нет.
+struct WsAuthToken(Mutex<Option<String>>);
+
+/// Спрашивает токен у backend: `<program> <args…> --print-ws-token`.
+///
+/// Backend сам генерирует токен при первом запуске и хранит его зашифрованным
+/// (`core/security/ws_token.py`), поэтому лаунчеру не нужны ни ключи, ни
+/// доступ к DPAPI. Токен — последняя непустая строка stdout.
+fn read_ws_token(settings: &LauncherSettings) -> Option<String> {
+    if let Ok(existing) = std::env::var("JARVIS_WS_TOKEN") {
+        let existing = existing.trim().to_string();
+        if !existing.is_empty() {
+            return Some(existing);
+        }
+    }
+    let command = settings.backend_command.clone().unwrap_or_default();
+    let (program, args) = command.split_first()?;
+    let root = project_root();
+    let program = resolve_backend_program(program, &root);
+    let mut builder = Command::new(program);
+    builder
+        .args(args)
+        .arg("--print-ws-token")
+        .current_dir(&root)
+        .env("JARVIS_HOME", &root)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        builder.creation_flags(0x08000000);
+    }
+    let output = builder.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()
+        .map(str::to_string)
+}
+
+#[tauri::command]
+fn ws_auth_token(state: tauri::State<WsAuthToken>) -> Result<String, String> {
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "ws token state poisoned".to_string())?;
+    if let Some(token) = guard.as_ref() {
+        return Ok(token.clone());
+    }
+    let token = read_ws_token(&launcher_settings())
+        .ok_or_else(|| "backend не выдал WS-токен".to_string())?;
+    *guard = Some(token.clone());
+    Ok(token)
+}
+
 fn stop_backend(app: &tauri::AppHandle) {
     let state = app.state::<BackendProcess>();
     let Ok(mut guard) = state.0.lock() else { return };
@@ -268,6 +330,8 @@ fn main() {
     let hidden = std::env::args().any(|arg| arg == "--hidden");
     tauri::Builder::default()
         .manage(BackendProcess(Mutex::new(None)))
+        .manage(WsAuthToken(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![ws_auth_token])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

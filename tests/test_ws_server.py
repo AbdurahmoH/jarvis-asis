@@ -90,7 +90,11 @@ def test_ws_command_roundtrip_and_confirmation():
         received: list[dict] = []
 
         # Клиент
-        async with websockets.connect("ws://127.0.0.1:8799") as ws:  # type: ignore
+        # S2: проверка Origin стала fail-closed (пустой список = «никого»), а
+        # дефолт конструктора — явный allowlist. Клиент без заголовка Origin
+        # теперь отклоняется, как и в продукте, поэтому тест его передаёт.
+        async with websockets.connect("ws://127.0.0.1:8799",
+                                      origin="http://localhost:1420") as ws:  # type: ignore
             first = json.loads(await ws.recv())
             assert first["type"] == "state" and first["state"] == "idle", first
 

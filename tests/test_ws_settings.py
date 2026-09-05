@@ -56,7 +56,9 @@ async def _connect(port: int):
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         try:
-            return await websockets.connect(f"ws://127.0.0.1:{port}")  # type: ignore
+            # S2: Origin обязателен — проверка стала fail-closed.
+            return await websockets.connect(f"ws://127.0.0.1:{port}",
+                                            origin="http://localhost:1420")  # type: ignore
         except OSError:
             await asyncio.sleep(0.03)
     raise AssertionError("WS-сервер не начал слушать порт")
