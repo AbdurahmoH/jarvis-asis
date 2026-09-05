@@ -36,6 +36,22 @@ data/brain/provider-secrets.dpapi
 jarvis/src-tauri/resources/jarvis-runtime/data/brain/provider-secrets.dpapi
 *.log
 
+# S0: одноразовые отладочные скрипты в корне репозитория. В них регулярно
+# оказываются живые токены (test_ws.cjs/test_running_ws.cjs содержали GitLab
+# PAT). Корневые *.cjs/*.mjs никогда не являются частью продукта: фронтенд
+# живёт в jarvis/, поэтому глушим их целиком, а не постфактум.
+/*.cjs
+/*.mjs
+
+# S0: локальные базы (missions.db, jarvis_graph.db, chroma.sqlite3) — данные
+# пользователя. Сейчас все лежат под уже игнорируемыми data/ и artifacts/,
+# но правило по расширению не даёт им утечь из новой директории.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # python env
 .venv/
 venv/
