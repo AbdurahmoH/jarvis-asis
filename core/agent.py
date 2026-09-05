@@ -64,7 +64,7 @@ from core.memory.short_term import SessionManager
 from core.model_router import ModelRouter, RoutingDecision
 from core.personality import PersonalityEngine
 from core.repair import RepairLoop
-from core.research import ResearchEngine
+from core.research import ResearchEngine, is_research_goal
 from core.routing.semantic_router import (
     RoutingContext as SemanticRoutingContext,
     RoutingDecision as SemanticRoutingDecision,
@@ -1037,7 +1037,7 @@ class Agent:
             )
 
         # ---- 7. RESEARCH MODE (§18): явное исследование ----
-        if decision.kind == "mission" and not self.deepseek_brain_mode:
+        if decision.kind == "mission" and is_research_goal(goal) and not self.deepseek_brain_mode:
             trace.append("режим: research workflow")
             return self._handle_research(goal, mission, cancel, trace)
 

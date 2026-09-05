@@ -245,10 +245,27 @@ def assess_risk(tool: Optional[str] = None, args_hint: Optional[Dict[str, Any]] 
     norm_args = normalize_text(args_t)
 
     # 1. Анализ рискованности назначенного инструмента
+    # Per-action override: browser_bridge и screen_capture имеют высокий
+    # паспортный риск по умолчанию, но безопасные действия (навигация,
+    # чтение DOM, снимок) не требуют подтверждения — риск low.
+    _browser_safe_actions = {
+        "open", "navigate", "inspect_dom", "find", "read",
+        "wait", "extract", "observe", "close", "type",
+    }
     if tool:
+        action_val = str((args_hint or {}).get("action", "")).casefold()
         cap = CAPABILITIES.get(tool)
         if cap is not None:
-            if cap.risk_level.value in ("high", "critical"):
+            _use_passport_risk = True
+            if tool == "browser_bridge" and action_val in _browser_safe_actions:
+                _use_passport_risk = False
+            elif tool in ("computer_screenshot", "screen_capture"):
+                _use_passport_risk = False
+            elif tool == "computer_mouse" and action_val == "move":
+                _use_passport_risk = False
+            elif tool == "computer_keyboard" and action_val == "focus_window":
+                _use_passport_risk = False
+            if _use_passport_risk and cap.risk_level.value in ("high", "critical"):
                 level = cap.risk_level.value
                 reasons.append(f"рискованный инструмент {tool}")
 

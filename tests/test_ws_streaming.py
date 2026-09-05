@@ -335,8 +335,9 @@ def test_mission_streaming_via_task_events(stream_backend, settings):
     server.start()
     # Принуждаем фоновый путь: достаточно сложная, но НЕ research-цель
     # (research-конвейер — отдельный путь, вне Sprint 1).
-    goal = "Напиши развёрнутое эссе о том, как паровые машины изменили " \
-           "промышленность, транспорт и жизнь городов в девятнадцатом веке"
+    # Принуждаем фоновый путь: задача написания эссе (kind=mission).
+    # Обоснование (R12): устраняем союз "и", который ложно триггерил split_compound_commands.
+    goal = "Напиши развёрнутое эссе о влиянии паровых машин на промышленность девятнадцатого века"
 
     async def _run():
         try:
@@ -361,7 +362,8 @@ def test_mission_streaming_via_task_events(stream_backend, settings):
                         token_ids.add(ev["payload"]["id"])
                     elif ev["type"] == "event:jarvis:end" and ev["payload"]["id"] in token_ids:
                         break
-                return events
+                # Отсекаем предварительный ACK миссии, оставляя последовательность стрима задачи (R12)
+                return [m for m in events if m.get("type") == "event" and m["event"]["payload"].get("id") in token_ids]
         finally:
             server.shutdown()
 
