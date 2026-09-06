@@ -771,6 +771,24 @@ class Settings(BaseModel):
 
         return self._dpapi_key(name)
 
+    def api_key_source(self, provider: str) -> str:
+        """C3: откуда реально берётся ключ — для provider_effective.
+
+        Возвращает "env" | "settings.json" | "dpapi" | "missing". Та же
+        цепочка приоритетов, что и в :meth:`get_api_key`, без значения.
+        """
+        name = provider.strip().lower()
+        if name == LOCAL_PROVIDER:
+            return "missing"
+        for env_name in (f"JARVIS_{name.upper()}_API_KEY", f"{name.upper()}_API_KEY"):
+            if os.environ.get(env_name, "").strip():
+                return "env"
+        if (self.api_keys.get(name) or "").strip():
+            return "settings.json"
+        if (self._dpapi_key(name) or "").strip():
+            return "dpapi"
+        return "missing"
+
     def _credential_store_path(self) -> Optional[Path]:
         """Абсолютный путь к DPAPI-хранилищу ключей (как его строит bootstrap)."""
         store = getattr(self, "credential_store", None)

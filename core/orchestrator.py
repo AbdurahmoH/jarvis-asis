@@ -838,6 +838,11 @@ class Orchestrator:
             # route() обязан отвечать за <= 40 мс с первого запроса.
             self._warmup_router()
             self._start_local_warmup()
+            # C3: фоновый health-probe провайдера раз в минуту.
+            try:
+                self._brain.start_probe(interval_sec=60.0)
+            except Exception as exc:
+                log.debug("provider probe не запущен: %s", exc)
             # Never hold the WS/UI socket on model loading.  The readiness
             # event is reported through the runtime_status handshake; reflex
             # actions and TTS can start while the deliberate model warms.
@@ -938,6 +943,13 @@ class Orchestrator:
 
         # Отмечаем активность для proactor
         self._proactor.mark_user_activity()
+        # C3: probe-if-stale — после простоя > 5 мин первый запрос получает
+        # свежую пробу провайдера до того, как пойдёт в мозг.
+        try:
+            self._brain.mark_activity()
+            self._brain.probe_if_stale(max_idle_sec=300.0)
+        except Exception as exc:
+            log.debug("probe_if_stale пропущен: %s", exc)
         living_context = self._living.context.current
         living_state = (
             living_context.to_dict()
@@ -1751,6 +1763,39 @@ class Orchestrator:
         state["verified"] = verified
         return state
 
+    def provider_effective(self) -> Dict[str, Any]:
+        """C3: правда о провайдере — источник ключа, живость, состояние цепи.
+
+        Проблема D1 жила месяц именно потому, что «работает ли облако» не
+        было видно снаружи. Это поле видно всегда: в runtime_diagnostics,
+        в WS runtime_status и в каждом отчёте прогонов.
+        """
+        provider = str(getattr(self._settings, "deepseek_provider", "deepinfra") or "deepinfra")
+        model = str(getattr(self._settings, "deepseek_model", "") or "")
+        source = "missing"
+        try:
+            source = self._settings.api_key_source(provider)
+        except Exception as exc:
+            log.debug("api_key_source не удался: %s", exc)
+        reachable = None
+        last_probe = None
+        brain = getattr(self, "_brain", None)
+        if brain is not None:
+            last_probe = (getattr(brain, "last_probe_at", {}) or {}).get(provider)
+            if model:
+                snapshot = brain.health.snapshot(f"{provider}:{model}")
+                reachable = str(getattr(snapshot.status, "value", snapshot.status)) == "available"
+            circuit = brain.circuit_state(provider, model)
+        else:
+            circuit = "closed"
+        return {
+            "tier": "FAST",
+            "source": source,
+            "reachable": reachable,
+            "last_probe": last_probe,
+            "circuit": circuit,
+        }
+
     def runtime_diagnostics(self) -> Dict[str, Any]:
         """Startup/model diagnostics for the Wave 0 verification report."""
         # S4: счётчик утёкших исполнений (watchdog отдал управление, побочные
@@ -1763,6 +1808,7 @@ class Orchestrator:
             "warmup_ready": self._warmup_ready.is_set(),
             "router": dict(getattr(self, "_router_diagnostics", {"ready": False})),
             "provider": self.provider_status(),
+            "provider_effective": self.provider_effective(),
             "kernel": {"ledger": str(self._kernel.root / "missions.db"),
                        "capabilities": len(self._kernel.capabilities.snapshot())},
             "tools": leaked_execution_stats(),

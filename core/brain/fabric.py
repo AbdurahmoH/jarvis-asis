@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from core.security.redaction import redact_text
 
-from .health import BrainHealthManager
+from .health import BrainHealthManager, ProviderProbe
 from .context import ContextComposer
 from .models import (
     BrainRequest, BrainResult, BrainRoute, NoRouteAvailable,
@@ -39,6 +39,36 @@ class BrainFabric:
         self._applied_config_generation = -1
         self._route_providers: OrderedDict[int, dict[str, object]] = OrderedDict()
         self._retired_providers: list[object] = []
+        # C3: provider_effective — время последней пробы по провайдеру и
+        # фоновый probe; время активности пользователя для probe-if-stale.
+        self.last_probe_at: dict[str, str] = {}
+        self._last_activity: float = time.monotonic()
+        self._probe: ProviderProbe | None = None
+
+    def mark_activity(self) -> None:
+        """C3: пользователь что-то попросил — сброс idle-таймера пробы."""
+        self._last_activity = time.monotonic()
+
+    def probe_if_stale(self, *, max_idle_sec: float = 300.0) -> bool:
+        """C3: первая проба после долгого простоя (idle > 5 мин по наряду)."""
+        if time.monotonic() - self._last_activity < max_idle_sec:
+            return False
+        self.refresh_health()
+        return True
+
+    def start_probe(self, *, interval_sec: float = 60.0) -> None:
+        """C3: фоновая проба провайдера раз в interval_sec (наряд: 60 с)."""
+        if self._probe is None:
+            self._probe = ProviderProbe(self.refresh_health, interval_sec=interval_sec)
+        self._probe.start()
+
+    def stop_probe(self) -> None:
+        if self._probe is not None:
+            self._probe.stop()
+
+    def circuit_state(self, provider: str, model: str = "") -> str:
+        """C3: состояние цепи breaker'а для ключа provider:model."""
+        return self.health.circuit_state(f"{provider}:{model}" if model else provider)
 
     def attach_config(self, store, provider_factory) -> None:
         self._config_store = store
@@ -92,6 +122,8 @@ class BrainFabric:
             try:
                 snapshot = entry.provider.health()
                 statuses[entry.provider.name] = snapshot
+                # C3: время последней пробы уходит в provider_effective.
+                self.last_probe_at[entry.provider.name] = ProviderProbe.now_iso()
                 for model in entry.provider.models():
                     key = f"{entry.provider.name}:{model}"
                     self.health.set_status(key, snapshot.status)
@@ -218,6 +250,7 @@ class BrainFabric:
             return len(keys)
 
     def close(self) -> None:
+        self.stop_probe()
         self.registry.close()
         for provider in self._retired_providers:
             try:

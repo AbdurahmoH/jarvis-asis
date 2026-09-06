@@ -347,6 +347,11 @@ class JarvisWSServer:
                 "ready": ready,
                 "router": {"ready": router_ready, **router_info},
                 "provider": provider,
+                # C3: правда о провайдере — источник ключа, живость, цепь.
+                "provider_effective": (
+                    diagnostics.get("provider_effective")
+                    if isinstance(diagnostics, dict) else None
+                ),
                 "diagnostics": {**warmup, "brain": "deepseek"},
             }
         warmup_state = str(warmup.get("state", "") or "").casefold()
@@ -361,6 +366,10 @@ class JarvisWSServer:
             "type": "runtime_status", "state": state, "ready": state == "ready",
             "router": {"ready": router_ready, **router_info},
             "provider": provider,
+            "provider_effective": (
+                diagnostics.get("provider_effective")
+                if isinstance(diagnostics, dict) else None
+            ),
             "diagnostics": warmup,
         }
 

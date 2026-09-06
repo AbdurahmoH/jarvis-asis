@@ -60,7 +60,10 @@ def _identity_contract() -> str:
 
 def build_brain_fabric(settings: Any, *, secret_store: SecretStore | None = None) -> BrainFabric:
     registry = BrainProviderRegistry()
-    health = BrainHealthManager(failure_threshold=2, cooldown_seconds=10.0)
+    # C3: оконный breaker — 3 отказа/таймаута за 60 с открывают цепь на 90 с,
+    # затем одна half-open проба.
+    health = BrainHealthManager(failure_threshold=3, cooldown_seconds=90.0,
+                                failure_window_seconds=60.0)
     policy = _policy(settings)
     credential_store = getattr(settings, "credential_store", None)
     credential_path = str(
