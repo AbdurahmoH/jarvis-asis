@@ -17,12 +17,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+log = logging.getLogger(__name__)
+
+#: C2: DPAPI-ключ читается один раз на (путь, ссылку, mtime) — маршрут
+#: дергает ``get_api_key`` на горячем пути, DPAPI-расшифровка каждый раз
+#: недопустима. Значение кэша — строка (может быть пустой: «записи нет»).
+_DPAPI_KEY_CACHE: Dict[Any, str] = {}
+#: C2: проблема хранилища логируется ровно один раз за процесс.
+_DPAPI_KEY_WARNING_SHOWN: bool = False
 
 # ВАЖНО: config — лист зависимостей, он НЕ импортирует core.llm на верхнем
 # уровне, иначе возникает цикл импортов:
@@ -737,9 +747,14 @@ class Settings(BaseModel):
     def get_api_key(self, provider: str) -> Optional[str]:
         """API-ключ провайдера.
 
-        Порядок поиска: переменная окружения ``JARVIS_<PROVIDER>_API_KEY``,
-        затем ``<PROVIDER>_API_KEY``, затем settings.json. Отсутствие ключа —
-        не ошибка: возвращается ``None``.
+        Порядок поиска (C2, мост D1): переменная окружения
+        ``JARVIS_<PROVIDER>_API_KEY``, затем ``<PROVIDER>_API_KEY``, затем
+        settings.json, затем DPAPI-хранилище — тот же credential store, из
+        которого ключ читают провайдеры мозга (``core/brain/providers.py``).
+        До C2 разрыв этой цепочки делал ``is_tier_available`` слепым к
+        установленному ключу, и роутер молча уводил всё на локальную модель.
+
+        Отсутствие ключа — не ошибка: возвращается ``None``.
         """
         name = provider.strip().lower()
         if name == LOCAL_PROVIDER:
@@ -750,7 +765,66 @@ class Settings(BaseModel):
             if env_value:
                 return env_value
 
-        return self.api_keys.get(name)
+        from_settings = self.api_keys.get(name)
+        if from_settings:
+            return from_settings
+
+        return self._dpapi_key(name)
+
+    def _credential_store_path(self) -> Optional[Path]:
+        """Абсолютный путь к DPAPI-хранилищу ключей (как его строит bootstrap)."""
+        store = getattr(self, "credential_store", None)
+        raw = str(getattr(store, "path", "") or "data/brain/provider-secrets.dpapi")
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path(self.data_dir).parent / path
+        return path
+
+    def _dpapi_reference(self, provider: str) -> str:
+        """Ссылка ключа провайдера внутри DPAPI-хранилища."""
+        store = getattr(self, "credential_store", None)
+        default_provider = str(getattr(store, "provider", "") or "").strip().lower()
+        if provider == default_provider:
+            return str(getattr(store, "reference", "") or "").strip()
+        return f"{provider.upper()}_API_KEY"
+
+    def _dpapi_key(self, provider: str) -> Optional[str]:
+        """Читает ключ провайдера из DPAPI-хранилища, молча деградируя.
+
+        Любая проблема (не Windows, файла нет, расшифровка не удалась) — это
+        «ключа нет», а не сбой: ровно одно предупреждение за процесс, чтобы
+        не шуметь на горячем пути маршрутизации.
+        """
+        global _DPAPI_KEY_WARNING_SHOWN
+        reference = self._dpapi_reference(provider)
+        if not reference:
+            return None
+        path = self._credential_store_path()
+        if path is None or not path.is_file():
+            return None
+        cache_key = (str(path), reference, path.stat().st_mtime_ns)
+        cached = _DPAPI_KEY_CACHE.get(cache_key)
+        if cached is not None:
+            return cached or None
+        try:
+            from core.brain.secrets import DPAPISecretStore
+            value = (DPAPISecretStore(path).get(reference) or "").strip()
+        except Exception as exc:
+            if not _DPAPI_KEY_WARNING_SHOWN:
+                _DPAPI_KEY_WARNING_SHOWN = True
+                log.warning(
+                    "DPAPI credential store недоступен (%s); ключ провайдера '%s' "
+                    "не читается — считаем его отсутствующим.", type(exc).__name__, provider,
+                )
+            return None
+        _DPAPI_KEY_CACHE[cache_key] = value
+        if not value and not _DPAPI_KEY_WARNING_SHOWN:
+            _DPAPI_KEY_WARNING_SHOWN = True
+            log.warning(
+                "В DPAPI-хранилище %s нет записи '%s' — провайдер '%s' без ключа.",
+                path.name, reference, provider,
+            )
+        return value or None
 
     def get_endpoint(self, provider: str) -> Optional[str]:
         """Базовый URL провайдера (без завершающего слэша)."""
