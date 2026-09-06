@@ -387,6 +387,11 @@ class JarvisWSServer:
             if tts is None:
                 return
             tts.add_output(output)
+        except TypeError as exc:
+            # S5: неверный тип на границе речи — ошибка вызывающего, а не
+            # необязательность TTS. Раньше она глоталась на debug, и
+            # ambient-инициативы молча не озвучивались.
+            log.error("TTS-озвучка отклонена: %s", exc)
         except Exception as exc:  # noqa: BLE001 — TTS не ломает ответы
             log.debug("TTS-озвучка пропущена: %s", exc)
 
@@ -1324,7 +1329,10 @@ class JarvisWSServer:
                         "timestamp": _now_ms(),
                     },
                 })
-                self._speak(text)
+                # S5: _speak принимает только AssistantOutput — сырая строка
+                # раньше отклонялась с TypeError и молча глоталась на debug.
+                from core.voice.output import AssistantOutput
+                self._speak(AssistantOutput.natural(text))
         elif mtype == "screen_capture":
             # S3: флага permission в протоколе больше нет — разрешение
             # спрашивается у хранилища полномочий, а не у клиента.

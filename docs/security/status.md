@@ -14,7 +14,7 @@
 | S2 | WS без аутентификации с двух сторон; `_origin_allowed` fail-open; токен в query string | **закрыт** | `tests/regressions/test_s2_ws_authentication.py` |
 | S3 | `screen_capture` разрешается клиентским флагом `permission` | **закрыт** | `tests/regressions/test_s3_screen_capture_authority.py` |
 | S4 | Автоповтор побочных инструментов; таймауты; утечка legacy-потоков | **закрыт** | `tests/regressions/test_s4_executor_retry_and_leaks.py` |
-| S5 | `ambient_initiated` не озвучивается (`_speak` глотает `TypeError`) | не начат | — |
+| S5 | `ambient_initiated` не озвучивается (`_speak` глотает `TypeError`) | **закрыт** | `tests/regressions/test_s5_ambient_speak.py` |
 | S6 | `read_file` обрезает до 1000 символов; `search_files` без отмены; `write_file` без лимита | не начат | — |
 | S7 | Shadow sandbox: denylist по имени обходится алиасом | не начат | — |
 
@@ -772,6 +772,62 @@ browser/CUA 60.0, web 30.0, system 5.0, file 10.0, неизвестный инс
 * **`computer_mouse`/`computer_keyboard`: 60 с некупируемого окна** на
   legacy-пути (кооперативная отмена) — риск принят по наряду, зафиксирован
   выше.
+
+
+---
+
+## S5 — ambient-инициатива озвучивается, `_speak` не глотает TypeError
+
+**Сделано.** Правки: `core/ws_server.py` (граница речи + место вызова).
+
+### Что было сломано
+
+Ветка `ambient_initiated` вызывала `self._speak(text)` со строкой, а `_speak`
+принимает только `AssistantOutput` и поднимал
+`TypeError("WS speech boundary accepts AssistantOutput only")`. Исключение
+глотал общий `except Exception` с `log.debug`: событие
+`event:system_initiated` клиент получал, очередь TTS — никогда. Фича была
+мертва и молчала об этом — уровень debug в штатном логе не виден.
+
+### Как устроено теперь
+
+* Место вызова заворачивает текст: `self._speak(AssistantOutput.natural(text))`
+  — тот же вид, что уже использовал приветственный путь.
+* `_speak` разделяет два класса отказов. `TypeError` (неверный тип на границе
+  речи — ошибка вызывающего, а не необязательность TTS) логируется на
+  `error`. Остальное (TTS выключен настройкой, очередь недоступна, сбой
+  `add_output`) осталось на `debug` — TTS по-прежнему не ломает ответный путь.
+
+### Решения, принятые сознательно
+
+* Событие `event:system_initiated` и правило «пустой текст — тишина» не
+  тронуты: правка только переводит существующую инициативу в слышимую.
+* Импорт `AssistantOutput` в ветке функционально-локальный — как в остальном
+  модуле (приветственный путь делает то же самое).
+* Тест не воспроизводит жизненный цикл сокета: `_emit` в юнит-окружении no-op
+  (требует живого loop), поэтому событие перехвачено двойником — проверяется
+  содержимое payload, а не транспорт.
+
+### Тест
+
+`tests/regressions/test_s5_ambient_speak.py` — 6 проверок:
+
+| Что закрепляет | Проверка |
+|---|---|
+| ambient с текстом доходит до TTS | очередь получила ровно один `AssistantOutput` с исходным текстом |
+| событие клиенту не потеряно | `_emit` вызван с `event:system_initiated` и тем же payload; озвучка происходит вместе с ним |
+| пустой текст — тишина | ни события, ни элемента очереди |
+| `_speak` отвергает строку громко | `log.error` присутствует, глотания на debug нет, очередь пуста |
+| положительный контроль границы | корректный `AssistantOutput` проходит в очередь |
+| AST-инвариант | ни один вызов `_speak` в `ws_server.py` не передаёт строковый литерал |
+
+### Проверка
+
+| Прогон | Результат | Завершение процесса |
+|---|---|---|
+| `pytest tests/regressions/test_s5_ambient_speak.py` | `6 passed in 0.72s` | сам, код 0 |
+| `pytest tests/regressions` | `220 passed, 1 skipped, 2 warnings in 31.59s` | сам, код 0 |
+| `pytest tests/routing` | `42 passed, 3 warnings in 27.02s` | **зависает** после итоговой строки, убит внешним `timeout` на 150 с (код 124) — известная проблема, без изменений |
 
 
 `pytest` зависает **после** печати итоговой строки, на завершении процесса.
