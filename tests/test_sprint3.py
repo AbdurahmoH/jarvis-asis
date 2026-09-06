@@ -592,7 +592,9 @@ def test_conversation_all_models_dead_model_error(monkeypatch, settings):
     agent = Agent(settings, config=AgentConfig(enable_skill_forge=False))
     outcome = agent.execute("привет")
     assert outcome.mode == "model_error"
-    assert outcome.text.startswith(MODEL_UNAVAILABLE_TEXT)
+    # C4 (cloud-only): дружелюбная фраза маппера вместо сырой ошибки.
+    from core.brain.error_messages import MESSAGES
+    assert outcome.text in MESSAGES.values()
 
 
 # --------------------------------------------------------------------------- #

@@ -154,6 +154,50 @@ def _hide_reasoning_stream(cumulative: str) -> str:
     return out
 
 
+#: C6: намерение «установить/скачать ПО» — в этой версии не поддерживается
+#: и не подменяется медиа/app-инструментами (аудит: фразы 4, 10, 16, 25, 29).
+_INSTALL_INTENT_RE = re.compile(
+    r"\b(установ\w*|скач\w*|загруз\w*|инсталлиру\w*|install\w*|download\w*)\b",
+    re.IGNORECASE,
+)
+#: C6: «извлечённое имя приложения» на самом деле часть задачи (аудит-фраза 25:
+#: name = «Interpreter скачать да? десктоп версию»).
+_TASK_CONTEXT_RE = re.compile(
+    r"\b(установ\w*|скач\w*|настро\w*|объясн\w*|обьясн\w*|загруз\w*|найд\w*|напиши|сделай)\b",
+    re.IGNORECASE,
+)
+_SUSPICIOUS_ARG_RE = re.compile(r"\b(да|ли|что|который|какой|где|когда)\b", re.IGNORECASE)
+
+
+def _arg_looks_like_task(name: str) -> bool:
+    """C6: «имя приложения» выглядит как кусок задачи, а не как имя."""
+    if not name:
+        return False
+    if "?" in name or "？" in name:
+        return True
+    if len(name.split()) > 3:
+        return True
+    if _TASK_CONTEXT_RE.search(name):
+        return True
+    if _SUSPICIOUS_ARG_RE.search(name):
+        return True
+    return False
+
+
+def _install_intent(goal: str) -> bool:
+    """C6: просьба установить/скачать ПО — unsupported, не подмена."""
+    return bool(_INSTALL_INTENT_RE.search(goal))
+
+
+def goal_parts_text(parts) -> str:
+    """C6: собрать части составной цели обратно в один текст для гейта."""
+    return " ".join(str(part) for part in parts)
+
+
+#: Инструменты, которыми fast path подменял установку ПО в аудите.
+_SUBSTITUTION_VICTIMS = frozenset({"open_app", "close_app", "play_music", "volume"})
+
+
 def render_structured_fact(data: Any) -> str:
     """Детерминированное представление структурированного факта без вызова LLM."""
     if isinstance(data, str):
@@ -1794,6 +1838,15 @@ class Agent:
     def _execute_compound(self, parts: List[str], *, mission: Optional[Mission],
                           cancel: threading.Event, trace: List[str]) -> AgentOutcome:
         """Execute explicit independent clauses and require every one verified."""
+        # C6: составная задача про установку ПО не разбивается на подмены
+        # play_music/open_app — честный отказ целиком (аудит-фразы 4, 16).
+        if _install_intent(goal_parts_text(parts)):
+            return AgentOutcome(
+                text=("Установка программ пока не поддерживается в этой версии. "
+                      "Могу найти официальный сайт и открыть страницу загрузки."),
+                verified=False, tool_used=None,
+                mode="unsupported", trace=trace + ["C6: compound install-intent refused"],
+            )
         if mission is not None:
             mission.set_status(MissionStatus.EXECUTING, "выполняю составную задачу")
             mission.set_progress(0.4, "выполнение составных шагов")
@@ -1894,6 +1947,17 @@ class Agent:
         if cap is None:
             return None
         caps = [cap]
+
+        # C6: установка ПО не подменяется open_app/play_music/volume —
+        # честный ответ вместо случайного инструмента (аудит-фразы 4/16/25).
+        if tool in _SUBSTITUTION_VICTIMS and _install_intent(goal):
+            trace = [f"C6: install-intent не подменяется {tool}"]
+            return AgentOutcome(
+                text=("Установка программ пока не поддерживается в этой версии. "
+                      "Могу найти официальный сайт и открыть страницу загрузки."),
+                verified=False, tool_used=None, risk=risk,
+                mode="unsupported", trace=trace,
+            )
 
         args = self._extract_simple_args(goal, cap)
         if args is None:
@@ -2003,8 +2067,14 @@ class Agent:
                     for filler in ("приложение ", "программу ", "app "):
                         if name.lower().startswith(filler):
                             name = name[len(filler):]
-                    if name:
-                        return {"name": name}
+                    if not name:
+                        continue
+                    # C6: «имя» с вопросом/глаголами/частицами — это задача
+                    # (например «Interpreter скачать да? десктоп версию»),
+                    # а не приложение; инструмент не выполняем.
+                    if _arg_looks_like_task(name):
+                        return None
+                    return {"name": name}
             return None
 
         if cap.name == "system_status":
@@ -2014,6 +2084,23 @@ class Agent:
             return {}
 
         if cap.name == "play_music":
+            if _install_intent(goal):
+                return None  # C6: установка — не музыкальный запрос
+            # C6: жалоба/задача («сделай нормального джарвиса. Что за хуйня?»)
+            # не превращается в музыкальный запрос: нужен музыкальный предмет
+            # или музыкальный глагол, иначе — clarify выше по стеку.
+            music_subject = re.search(
+                r"\b(музык\w*|трек\w*|песн\w*|плейлист\w*|имбу|имба|включи|поставь|запусти)\b",
+                lowered,
+            )
+            task_verb = re.search(
+                r"\b(сделай|найди|напиши|установи|скачай|настрой|объясни|обьясни|удали|отправь)\b",
+                lowered,
+            )
+            if task_verb and not music_subject:
+                return None
+            if "?" in goal and not music_subject:
+                return None
             local_markers = (
                 "с компьютера", "локальную музыку", "локальная музыка",
                 "local file", ".mp3",
@@ -2060,6 +2147,8 @@ class Agent:
             return {"query": query, "max_results": 5} if query else None
 
         if cap.name == "volume":
+            if _install_intent(goal):
+                return None  # C6: установка — не запрос громкости
             if any(w in lowered for w in ("выключи звук", "mute", "без звука")):
                 return {"action": "mute"}
             if any(w in lowered for w in ("тише", "убавь", "потише", "down")):
