@@ -453,6 +453,10 @@ class LimitsConfig(_Section):
     # получали ложный таймаут. Класс явный, чтобы бюджет не выводился из
     # соседнего.
     tool_timeout_browser_sec: float = 60.0
+    # S6: потолок одной записи write_file в байтах. Раньше инструмент
+    # принимал произвольный объём; непригодное значение в настройках
+    # деградирует к модулю-дефолту (2 МБ), а не к безлимитной записи.
+    max_write_bytes: int = 2 * 1024 * 1024
     #: Максимум параллельных вызовов инструментов (изоляция ресурсов).
     max_parallel_tools: int = 4
     #: Потолок вывода одного инструмента, байты (50 KB; больше — усечение).
@@ -499,7 +503,7 @@ class LimitsConfig(_Section):
             raise ValueError("таймаут должен быть больше нуля")
         return value
 
-    @field_validator("max_parallel_tools", "tool_output_max_bytes")
+    @field_validator("max_parallel_tools", "tool_output_max_bytes", "max_write_bytes")
     @classmethod
     def _positive_limit(cls, value: int) -> int:
         if value <= 0:

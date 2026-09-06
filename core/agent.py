@@ -2841,7 +2841,9 @@ class Agent:
         for item in observations[-8:]:
             output = json.dumps(item.get("output"), ensure_ascii=False, default=str)
             if len(output) > 5000:
-                output = output[:5000] + "<truncated>"
+                # S6: граница контекста модели честная — видно, сколько
+                # символов не показано, а не безликое "<truncated>".
+                output = f"{output[:5000]}… [показаны первые 5000 из {len(output)} символов]"
             compact.append({
                 "step": item.get("step"),
                 "tool": item.get("tool"),

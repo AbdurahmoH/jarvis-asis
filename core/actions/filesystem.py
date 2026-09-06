@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import fnmatch
 import shutil
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from config.settings import Settings
 from core.actions.base import ActionResult, Tool, ToolContext
@@ -46,6 +48,17 @@ _MAX_READ_SIZE = 10 * 1024 * 1024
 
 #: Максимальное число результатов поиска
 _MAX_SEARCH_RESULTS = 50
+
+#: S6: сколько записей максимум просматривает одна операция поиска —
+#: без потолка rglob по большой папке шёл без контроля до конца.
+_MAX_SCANNED_ENTRIES = 5000
+
+#: S6: бюджет времени одной операции поиска, секунд.
+_SEARCH_TIME_BUDGET_SEC = 10.0
+
+#: S6: лимит записи, применяемый когда настройка limits.max_write_bytes
+#: отсутствует или непригодна (0, отрицательная, не число).
+_FALLBACK_WRITE_LIMIT_BYTES = 2 * 1024 * 1024
 
 
 def resolve_docs_path(path: str, settings: Settings) -> Path:
@@ -164,6 +177,16 @@ def read_file(path: str, settings: Settings, max_size: int = _MAX_READ_SIZE,
         return target.read_text(encoding="cp1251", errors="replace")
 
 
+def _write_limit(settings: Settings | None) -> int:
+    """S6: лимит записи из настроек; непригодное значение — безопасный дефолт."""
+    raw = getattr(getattr(settings, "limits", None), "max_write_bytes", None)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _FALLBACK_WRITE_LIMIT_BYTES
+    return value if value > 0 else _FALLBACK_WRITE_LIMIT_BYTES
+
+
 def write_file(path: str, content: str, settings: Settings) -> ActionResult:
     """Записывает файл (создаёт родительские директории).
 
@@ -177,6 +200,15 @@ def write_file(path: str, content: str, settings: Settings) -> ActionResult:
     """
     try:
         target = resolve_docs_path(path, settings)
+        # S6: отказ ДО записи — неудачная гигантская запись не должна
+        # успевать создать/перезаписать файл, прежде чем её отвергнут.
+        limit = _write_limit(settings)
+        size = len(content.encode("utf-8"))
+        if size > limit:
+            raise ValueError(
+                f"объём {size} байт превышает лимит записи {limit} байт "
+                f"(limits.max_write_bytes)"
+            )
         ensure_parent(target)
         atomic_write_text(target, content)
         log.info("Файл записан: %s (%d байт)", path, len(content.encode("utf-8")))
@@ -237,6 +269,7 @@ def search_files(
     max_results: int = _MAX_SEARCH_RESULTS,
     scope: str = "documents",
     sort_by: str = "path",
+    cancel_event: Optional[threading.Event] = None,
 ) -> List[str]:
     """Ищет файлы по имени или содержимому (простой текстовый поиск).
 
@@ -245,6 +278,9 @@ def search_files(
         settings: конфигурация.
         dir_path: директория для поиска (относительно documents_dir).
         max_results: максимум результатов.
+        cancel_event: S6 — сигнал отмены от executor'а; проверяется на
+            каждой итерации, прерванный поиск возвращает найденное к этому
+            моменту.
 
     Returns:
         Список относительных путей к найденным файлам.
@@ -259,8 +295,24 @@ def search_files(
 
     query_lower = query.lower()
     matches: List[Path] = []
-
+    # S6: обход ограничен числом просмотренных записей и временем; без
+    # потолков rglob по большой папке шёл минуты и не реагировал на отмену.
+    deadline = time.monotonic() + _SEARCH_TIME_BUDGET_SEC
+    scanned = 0
     for p in base.rglob("*"):
+        scanned += 1
+        if scanned > _MAX_SCANNED_ENTRIES:
+            log.info("Поиск «%s» остановлен: просмотрено %d записей (лимит %d)",
+                     query, scanned - 1, _MAX_SCANNED_ENTRIES)
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("Поиск «%s» прерван по отмене после %d записей", query, scanned - 1)
+            break
+        if time.monotonic() > deadline:
+            log.info("Поиск «%s» остановлен по бюджету времени (%.0f с) после %d записей",
+                     query, _SEARCH_TIME_BUDGET_SEC, scanned - 1)
+            break
+
         if not p.is_file():
             continue
 
@@ -395,17 +447,20 @@ class ReadFileTool(Tool):
         try:
             content = read_file(path, context.settings, scope=args.get("scope", "documents"))
             # §22 — содержимое файла это внешние ДАННЫЕ, не команды.
-            # Оборачиваем на границе инструмент→модель.
+            # Оборачиваем на границе инструмент→модель. S6: контент больше не
+            # режется ни здесь, ни в конверте (санитизация и detect_injection
+            # применяются к полному тексту) — границу контекста модели ставит
+            # честное усечение executor'а («вывод усечён: N символов, потолок M»).
             from core.safety import wrap_untrusted
-            preview = wrap_untrusted(
-                content[:1000] + ("… [обрезано]" if len(content) > 1000 else ""),
-                source=f"read_file ({path})",
+            wrapped = wrap_untrusted(
+                content, source=f"read_file ({path})",
+                max_chars=max(len(content), 1),
             )
             return ActionResult(
                 tool=self.name,
                 args=args,
                 ok=True,
-                output=f"Содержимое {path}:\n\n{preview}",
+                output=f"Содержимое {path}:\n\n{wrapped}",
             )
         except Exception as exc:
             return ActionResult(
@@ -513,6 +568,7 @@ class SearchFilesTool(Tool):
         results = search_files(
             query, context.settings, dir_path, max_results,
             scope=scope, sort_by=sort_by,
+            cancel_event=context.cancel_event,
         )
 
         if not results:
