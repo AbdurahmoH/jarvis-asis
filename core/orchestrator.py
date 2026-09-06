@@ -837,6 +837,13 @@ class Orchestrator:
             # Шаг 6: semantic-роутер прогревается до объявления готовности —
             # route() обязан отвечать за <= 40 мс с первого запроса.
             self._warmup_router()
+            # C5: одноразовый бутстрап ключа из secrets.local.json в DPAPI
+            # (делается до первых обращений к провайдеру).
+            try:
+                from core.brain.secrets import bootstrap_from_local_secrets
+                bootstrap_from_local_secrets(self._settings)
+            except Exception as exc:
+                log.debug("secrets bootstrap пропущен: %s", exc)
             self._start_local_warmup()
             # C3: фоновый health-probe провайдера раз в минуту.
             try:

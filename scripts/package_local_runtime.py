@@ -25,8 +25,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def _provision_packaged_credential(output: Path, *, dry_run: bool = False) -> Path:
-    """Create the owner credential payload without ever logging its value."""
+def _provision_packaged_credential(output: Path, *, dry_run: bool = False,
+                                   secrets_file: Path | None = None) -> Path:
+    """Create the owner credential payload without ever logging its value.
+
+    C5: ключ берётся из env (``JARVIS_BUILD_DEEPINFRA_API_KEY`` /
+    ``DEEPINFRA_API_KEY``) или из ``config/secrets.local.json`` разработчика.
+    Нет ни того, ни другого — сборка ФЕЙЛИТСЯ с явным сообщением: приватная
+    сборка без ключа недопустима.
+    """
     target = output / "data" / "brain" / "provider-secrets.dpapi"
     if dry_run:
         return target
@@ -35,11 +42,20 @@ def _provision_packaged_credential(output: Path, *, dry_run: bool = False) -> Pa
         or os.environ.get("DEEPINFRA_API_KEY", "").strip()
     )
     if not raw:
-        raise RuntimeError(
-            "Production package requires the owner DeepInfra key in "
-            "JARVIS_BUILD_DEEPINFRA_API_KEY or DEEPINFRA_API_KEY; "
-            "the key is never read from Git or written to JSON."
-        )
+        local_secrets = secrets_file or (ROOT / "config" / "secrets.local.json")
+        if not local_secrets.is_file():
+            raise RuntimeError(
+                "secrets.local.json missing — create it before packaging "
+                '(format: {"deepinfra_api_key": "<key>"}) or set '
+                "JARVIS_BUILD_DEEPINFRA_API_KEY / DEEPINFRA_API_KEY"
+            )
+        try:
+            payload = json.loads(local_secrets.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise RuntimeError(f"secrets.local.json is not valid JSON: {exc}") from exc
+        raw = str(payload.get("deepinfra_api_key") or "").strip()
+        if not raw:
+            raise RuntimeError("secrets.local.json has no 'deepinfra_api_key' entry")
     from core.brain.secrets import DPAPISecretStore
     target.parent.mkdir(parents=True, exist_ok=True)
     store = DPAPISecretStore(target)
@@ -249,6 +265,19 @@ def stage(*, output: Path, include_fallback: bool = False,
     (output / "data" / "models" / "piper").mkdir(parents=True, exist_ok=True)
     (output / "runtime").mkdir(parents=True, exist_ok=True)
     credential = _provision_packaged_credential(output)
+    # C5: копия secrets.local.json в пакет — запасной одноразовый бутстрап,
+    # если DPAPI-блоб не расшифруется на машине пользователя; первый запуск
+    # переносит ключ в локальный DPAPI и удаляет файл.
+    local_secrets = ROOT / "config" / "secrets.local.json"
+    if local_secrets.is_file():
+        secrets_target = output / "config" / "secrets.local.json"
+        secrets_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_secrets, secrets_target)
+        manifest["files"].append({
+            "filename": "config/secrets.local.json",
+            "size_bytes": secrets_target.stat().st_size,
+            "sha256": _sha256(secrets_target),
+        })
     manifest["files"].append({
         "filename": "data/brain/provider-secrets.dpapi",
         "size_bytes": credential.stat().st_size,

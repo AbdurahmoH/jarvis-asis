@@ -265,7 +265,54 @@ class DPAPISecretStore(SecretStore):
             self._save(values)
 
 
+def bootstrap_from_local_secrets(settings, *, path=None) -> bool:
+    """C5: одноразовый перенос ключа из ``config/secrets.local.json`` в DPAPI.
+
+    Инсталлятор кладёт файл рядом с бинарьком/в корень проекта; при первом
+    запуске ключ уезжает в DPAPI-хранилище (тот же credential store, что
+    читают провайдеры мозга), файл удаляется после успешной проверки
+    обратного чтения. Любая проблема — «переноса не было» (False), без
+    исключений: продукт обязан стартовать и без ключа.
+    """
+    import logging
+    from pathlib import Path
+
+    log = logging.getLogger(__name__)
+    try:
+        candidate = path
+        if candidate is None:
+            candidate = Path("config") / "secrets.local.json"
+        candidate = Path(candidate)
+        if not candidate.is_file():
+            return False
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        key = str(payload.get("deepinfra_api_key") or "").strip()
+        if not key:
+            log.warning("secrets.local.json без записи 'deepinfra_api_key' — перенос пропущен")
+            return False
+
+        store_cfg = getattr(settings, "credential_store", None)
+        raw_path = str(getattr(store_cfg, "path", "") or "data/brain/provider-secrets.dpapi")
+        store_path = Path(raw_path)
+        if not store_path.is_absolute():
+            data_dir = getattr(settings, "data_dir", "data")
+            store_path = Path(data_dir).parent / store_path
+        reference = str(getattr(store_cfg, "reference", "") or "DEEPINFRA_API_KEY").strip()
+
+        store = DPAPISecretStore(store_path)
+        store.set(reference, key)
+        if store.get(reference) != key:
+            log.warning("Проверка ключа после записи в DPAPI не удалась — файл сохранён")
+            return False
+        candidate.unlink()
+        log.info("Ключ из secrets.local.json перенесён в DPAPI, файл удалён")
+        return True
+    except Exception as exc:
+        log.warning("Бутстрап secrets.local.json не удался: %s", type(exc).__name__)
+        return False
+
+
 __all__ = [
     "SecretStore", "MemorySecretStore", "EnvironmentSecretStore", "CompositeSecretStore",
-    "DPAPISecretStore",
+    "DPAPISecretStore", "bootstrap_from_local_secrets",
 ]

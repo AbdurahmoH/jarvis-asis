@@ -30,6 +30,9 @@ artifacts/verification/conversation-latency/
 # secrets / local runtime config — никогда не коммитить реальные ключи (E1/F1)
 config/settings.json
 config/settings.local.json
+config/secrets.local.json
+*.env
+data/brain/provider-secrets.dpapi
 .env
 .env.*
 data/brain/provider-secrets.dpapi
