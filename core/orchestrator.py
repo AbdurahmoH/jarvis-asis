@@ -909,6 +909,38 @@ class Orchestrator:
 
     def handle_input(self, text: str, *, channel: str = "text",
                      implicit_address: Optional[bool] = None) -> JarvisState:
+        """C4-граница: виток обработки никогда не бросает исключение вызывающему.
+
+        Raw-текст сбоя модели (ProviderUnavailable, NoRouteAvailable, цепочки
+        BackendUnavailable) остаётся в логе; пользователь получает
+        человеческую фразу из ``core.brain.error_messages``. Вся логика —
+        в :meth:`_handle_input_impl`.
+        """
+        started = time.perf_counter()
+        try:
+            return self._handle_input_impl(text, channel=channel,
+                                           implicit_address=implicit_address)
+        except Exception as exc:
+            log.exception("Виток обработки ввода упал")
+            from core.brain.error_messages import user_message_for
+            from core.voice.output import AssistantOutput
+            message = user_message_for(exc)
+            state = self._new_state(text)
+            self._session.push("user", text)
+            self._session.to_state(state)
+            state["response"] = message
+            state["error"] = f"{type(exc).__name__} (детали в логе)"
+            state["assistant_output"] = AssistantOutput.failure(
+                display_text=message,
+                error=ErrorInfo(
+                    ErrorCategory.UNKNOWN_FAILURE,
+                    technical_message=f"{type(exc).__name__}: redacted, see logs",
+                ),
+            ).to_dict()
+            return self._stamp_latency(state, started, "error")
+
+    def _handle_input_impl(self, text: str, *, channel: str = "text",
+                           implicit_address: Optional[bool] = None) -> JarvisState:
         """Полный цикл обработки пользовательского ввода.
 
         Единый вход (§3, §5): любой ввод идёт через один реальный путь —
@@ -1205,11 +1237,9 @@ class Orchestrator:
             )
         response = (output.display_text or "").strip()
         if not response:
-            response = (
-                "Ошибка DeepInfra/DeepSeek runtime: backend вернул пустой ответ."
-                if bool(getattr(self._settings, "deepseek_brain_mode", False))
-                else "Ошибка локального runtime: backend вернул пустой ответ."
-            )
+            # C4: пустой ответ модели — человеческая фраза без имён провайдеров.
+            from core.brain.error_messages import user_message_for
+            response = user_message_for("assistant output was empty")
             output = AssistantOutput.failure(
                 display_text=response,
                 error=ErrorInfo(
@@ -1301,11 +1331,9 @@ class Orchestrator:
         output = assistant_output_from_outcome(outcome)
         text = (output.display_text or "").strip()
         if not text:
-            text = (
-                "Ошибка DeepInfra/DeepSeek runtime: backend вернул пустой ответ."
-                if bool(getattr(self._settings, "deepseek_brain_mode", False))
-                else "Ошибка локального runtime: backend вернул пустой ответ."
-            )
+            # C4: пустой ответ модели — человеческая фраза без имён провайдеров.
+            from core.brain.error_messages import user_message_for
+            text = user_message_for("assistant output was empty")
             output = AssistantOutput.failure(
                 display_text=text,
                 error=ErrorInfo(

@@ -1264,7 +1264,10 @@ class Agent:
                 clarification_reason=missing_requirement,
             )
             if not clarification:
-                clarification = "Ошибка DeepInfra: не удалось сформировать уточняющий вопрос."
+                # C4: без упоминаний провайдера — пользователь видит фразу,
+                # а не сбой формирования уточнения.
+                from core.brain.error_messages import user_message_for
+                clarification = user_message_for("clarification form failed")
             return AgentOutcome(
                 text=clarification, verified=False, tool_used=decision.tool,
                 risk=risk, mode="clarification", trace=trace,
@@ -3237,7 +3240,10 @@ class Agent:
                             tool=decision.tool, result=result, verification=verification, args=decision.arguments,
                         )
                     else:
-                        text = "Ошибка DeepInfra: verified tool result получен, но финальная реплика модели не сформирована."
+                        # C4: финализатор не сформировал реплику — фраза без
+                        # имён провайдеров.
+                        from core.brain.error_messages import user_message_for
+                        text = user_message_for("finalizer produced no reply")
                 elif verification.verified and decision.tool in {"public_data", "weather"} and result and result.output:
                     if not verify_atomic_values_preserved(text, result.output):
                         trace.append("finalizer_dropped_fact")
@@ -3642,10 +3648,9 @@ class Agent:
                     tool=tool, result=result, verification=verification, args=args,
                 )
             else:
-                text = (
-                    f"Ошибка DeepInfra: verified tool result получен, "
-                    "но финальная реплика модели не сформирована."
-                )
+                # C4: финализатор не сформировал реплику — без имён провайдеров.
+                from core.brain.error_messages import user_message_for
+                text = user_message_for("finalizer produced no reply")
         elif verification.verified and tool in {"public_data", "weather"} and result and result.output:
             if not verify_atomic_values_preserved(text, result.output):
                 trace.append("finalizer_dropped_fact")
@@ -4103,12 +4108,11 @@ class Agent:
         if mission is not None:
             mission.note_error(detail)
             mission.set_progress(1.0, "модель недоступна — ответ не сформирован")
-        prefix = (
-            "Ошибка DeepInfra/DeepSeek runtime:"
-            if self.deepseek_brain_mode else MODEL_UNAVAILABLE_TEXT
-        )
+        # C4: пользователю — человеческая фраза из центрального маппера;
+        # raw-детали (ProviderUnavailable/DeepInfra/traceback) остаются в логе.
+        from core.brain.error_messages import user_message_for
         return AgentOutcome(
-            text=f"{prefix} {detail}",
+            text=user_message_for(detail),
             verified=False,
             mode="model_error",
             trace=trace,

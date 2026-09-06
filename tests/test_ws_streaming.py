@@ -411,8 +411,11 @@ def test_provider_failure_friendly_and_fast(dead_backend, settings):
     events, elapsed = asyncio.run(_run())
     seq = _jarvis_events(events)
     ends = [p["content"] for t, p in seq if t == "event:jarvis:end"]
-    assert ends and ends[0].startswith(MODEL_UNAVAILABLE_TEXT), ends
+    # C4 (cloud-only): пользователь получает фразу маппера (transient),
+    # а не MODEL_UNAVAILABLE_TEXT с сырыми HTTP-деталями.
+    from core.brain.error_messages import MESSAGES
+    assert ends and ends[0] == MESSAGES["transient"], ends
     # сбой провайдера признётся быстро, а не 45-секундным ожиданием
     assert elapsed < 5.0, f"долгий отказ: {elapsed:.1f}с"
     # сырые HTTP-детали не утекают в чат
-    assert any("HTTP 408" in c for c in ends)
+    assert not any("HTTP 408" in c for c in ends)

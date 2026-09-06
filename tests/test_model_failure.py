@@ -68,11 +68,14 @@ def test_model_failure_friendly_text_no_draft(dead_backend, settings, tmp_path):
     outcome = agent.execute("напиши большой текст про закат на море")
 
     assert outcome.mode == "model_error"
-    assert outcome.text.startswith(MODEL_UNAVAILABLE_TEXT)
-    # UI получает точную причину сбоя, включая последний backend error.
+    # C4 (cloud-only): текст — фраза маппера (transient: таймаут провайдера);
+    # raw-причина («HTTP 408», имена провайдеров) ушла в trace/логи.
+    from core.brain.error_messages import MESSAGES
+    assert outcome.text == MESSAGES["transient"]
     lowered = outcome.text.lower()
-    assert "http 408" in lowered
-    assert "таймаут" in lowered
+    assert "http 408" not in lowered
+    assert "таймаут" not in lowered
+    assert "anymodel" not in lowered
     assert "навык" not in lowered
     assert "не научен" not in lowered
     assert "готового способа" not in lowered
