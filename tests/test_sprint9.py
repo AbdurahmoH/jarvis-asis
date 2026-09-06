@@ -1,6 +1,8 @@
 """Sprint 9 — capability acquisition, verification, learning and continuity."""
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from config.settings import Settings
@@ -11,6 +13,8 @@ from core.llm.tiers import Tier
 from core.model_router import ModelRouter
 
 
+@pytest.mark.skipif(not Settings().local_llm_enabled,
+                    reason="local LLM disabled in cloud-only build")
 def test_offline_coder_keeps_task_role_with_best_local_model(tmp_path):
     model = tmp_path / "qwen.gguf"
     model.write_bytes(b"fixture")

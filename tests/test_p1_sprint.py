@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from config.settings import Settings
 from core.task_runtime import MissionStatus, TaskRuntime
 
 
@@ -92,6 +93,8 @@ def test_p1_runtime_cancel_queued():
 #  TEST 11 (A2) — 7B-эскалация удалена: локальный coder/architect запрещён
 # --------------------------------------------------------------------------- #
 
+@pytest.mark.skipif(not Settings().local_llm_enabled,
+                    reason="local LLM disabled in cloud-only build")
 def test_p1_no_local_heavy_escalation(monkeypatch):
     """Offline CODER keeps its role while reusing the configured local GGUF.
 

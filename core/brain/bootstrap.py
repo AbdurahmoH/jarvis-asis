@@ -114,9 +114,11 @@ def build_brain_fabric(settings: Any, *, secret_store: SecretStore | None = None
             ), secret_store=secrets),
             priority=100,
         )
-    elif bool(getattr(settings, "offline_mode", False)):
-        # Legacy local mode remains available to library tests and explicit
-        # offline profiles, but is unreachable from production migration mode.
+    elif (bool(getattr(settings, "offline_mode", False))
+          and bool(getattr(settings, "local_llm_enabled", False))):
+        # C1: legacy local mode remains available to library tests and explicit
+        # offline profiles, but is unreachable in the cloud-only build and from
+        # production migration mode.
         try:
             from core.llm import Tier, get_llm_backend
             local_backend = get_llm_backend(settings, Tier.FAST)

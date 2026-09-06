@@ -729,6 +729,13 @@ class Orchestrator:
                 finally:
                     self._warmup_ready.set()
                 return
+            if not bool(getattr(self._settings, "local_llm_enabled", False)):
+                # C1: cloud-only сборка — локальный мозг не греется и GGUF
+                # не скачивается; readiness закрывается, чтобы wait_for_warmup
+                # не ждал того, что отключено.
+                self._warmup_diagnostics["local_llm"] = "disabled (cloud-only build)"
+                self._warmup_ready.set()
+                return
             try:
                 # A clean install may have no GGUF yet.  Prepare exactly one
                 # hardware-selected artifact in the background; an existing

@@ -61,6 +61,13 @@ def _build_backend(settings: Settings, provider: str, model_id: str,
         BackendConfigError: конфигурация неполна.
     """
     if provider == LOCAL_PROVIDER:
+        # C1: cloud-only сборка гасит локальную LLM флагом. Файлы остаются
+        # в репозитории; флаг local_llm_enabled=True возвращает локальный мозг.
+        if not bool(getattr(settings, "local_llm_enabled", False)):
+            raise BackendConfigError(
+                "Локальная LLM отключена в этой сборке (local_llm_enabled=False). "
+                "Установите local_llm_enabled=True в настройках, чтобы вернуть локальный мозг."
+            )
         role = resolve_tier(task_role)
         local_cfg = settings.get_local_config(role)
         local_path = local_cfg.resolved_gguf_path

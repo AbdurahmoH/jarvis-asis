@@ -700,6 +700,12 @@ class Settings(BaseModel):
     #: manifest is HTTPS-only and SHA-256 verified; an existing user model is
     #: never replaced just because a newer profile is recommended.
     auto_download_models: bool = True
+    #: Cloud-only приватная сборка: локальная GGUF-LLM погашена флагом.
+    #: Файлы core/llm/local_qwen.py и llama_server.py остаются в репозитории
+    #: и возвращаются в pro-версии значением True. Голос (Piper/whisper),
+    #: wake word, ChromaDB и sentence-transformer роутера — не LLM и живут
+    #: локально независимо от этого флага.
+    local_llm_enabled: bool = False
     #: Production migration switch: one DeepInfra brain owns dialogue,
     #: planning and tool decisions. Local GGUF is not a fallback in this mode.
     deepseek_brain_mode: bool = False
@@ -793,6 +799,10 @@ class Settings(BaseModel):
         model_id = self.get_model_id(resolved)
 
         if provider == LOCAL_PROVIDER:
+            # C1: в cloud-only сборке локальные тиры недоступны независимо
+            # от наличия файла GGUF на диске.
+            if not bool(getattr(self, "local_llm_enabled", False)):
+                return False
             local_cfg = self.get_local_config(resolved)
             gguf = local_cfg.resolved_gguf_path
             return bool(gguf and gguf.is_file())
