@@ -32,12 +32,49 @@ _FORBIDDEN_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "input", "breakpoint",
     "globals", "locals", "vars", "getattr", "setattr", "delattr", "__build_class__",
 }
+# S7: корни цепочек атрибутов, через которые достают встроенные имена.
+# ``import builtins`` отсекается allow-list'ом импортов, поэтому живой путь —
+# ссылка на ``__builtins__`` внутри исполняемого кода.
+_BUILTINS_ROOTS = {"builtins", "__builtins__", "__builtin__"}
 _FORBIDDEN_TEXT = (
     "os.system", "subprocess", "multiprocessing", "threading", "_winapi", "ctypes",
     "requests", "socket", "urllib", "http.client", "pathlib", "shutil", "webbrowser",
     ".unlink(", ".rmdir(", ".remove(", "c:\\windows", "/etc/", "rm -rf", "del /",
     "powershell", "cmd.exe", "createprocess", "fork", "spawn",
 )
+
+
+def _alias_target_names(node: ast.AST):
+    """Все имена-цели присваивания, включая распаковку кортежей и starred."""
+    if isinstance(node, ast.Name):
+        yield node.id
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        for item in node.elts:
+            yield from _alias_target_names(item)
+    elif isinstance(node, ast.Starred):
+        yield from _alias_target_names(node.value)
+
+
+def _safety_violation(node: ast.AST) -> str | None:
+    """S7: причина отказа для узла AST; None — узел чист.
+
+    Запрещённое имя не должно быть ссылаемо нигде. Проверка только
+    ``ast.Call.func`` пропускала алиасинг: ``f = open``, затем ``f("x", "w")``;
+    ``g = getattr``; тень ``open = ...``; ``functools.partial(open)``;
+    распаковку ``a, f = 1, open``. Все эти пути — ссылки на одно и то же имя,
+    и все они запрещены одинаково.
+    """
+    if isinstance(node, ast.Name):
+        if node.id in _FORBIDDEN_NAMES:
+            kind = "shadowing" if isinstance(node.ctx, (ast.Store, ast.Del)) else "reference"
+            return f"forbidden name {kind}: {node.id}"
+        if node.id in _BUILTINS_ROOTS:
+            return f"forbidden builtins access: {node.id}"
+        return None
+    if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_NAMES:
+        # ``x.open(...)`` — то же имя через атрибут произвольного объекта.
+        return f"forbidden attribute access: {node.attr}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -171,6 +208,10 @@ class SandboxTester:
                 return CheckResult(False, f"forbidden call: {node.func.id}")
             elif isinstance(node, ast.Attribute) and node.attr.startswith("__"):
                 return CheckResult(False, f"forbidden dunder attribute: {node.attr}")
+            else:
+                reason = _safety_violation(node)
+                if reason:
+                    return CheckResult(False, reason)
         return CheckResult(True)
 
     def functional_check(self, source: str, test_params: dict[str, Any]) -> CheckResult:

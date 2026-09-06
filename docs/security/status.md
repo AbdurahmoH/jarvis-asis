@@ -16,7 +16,7 @@
 | S4 | Автоповтор побочных инструментов; таймауты; утечка legacy-потоков | **закрыт** | `tests/regressions/test_s4_executor_retry_and_leaks.py` |
 | S5 | `ambient_initiated` не озвучивается (`_speak` глотает `TypeError`) | **закрыт** | `tests/regressions/test_s5_ambient_speak.py` |
 | S6 | `read_file` обрезает до 1000 символов; `search_files` без отмены; `write_file` без лимита | **закрыт** | `tests/regressions/test_s6_file_tools_bounds.py` |
-| S7 | Shadow sandbox: denylist по имени обходится алиасом | не начат | — |
+| S7 | Shadow sandbox: denylist по имени обходится алиасом | **закрыт** | `tests/regressions/test_s7_shadow_sandbox_ast.py` |
 
 ---
 
@@ -922,6 +922,90 @@ browser/CUA 60.0, web 30.0, system 5.0, file 10.0, неизвестный инс
 | `pytest tests/regressions tests/test_hardening_executor.py tests/test_security_regressions.py` | `242 passed, 1 skipped, 2 warnings in 25.58s` | сам, код 0 |
 | `pytest tests/routing` | `42 passed, 3 warnings in 33.24s` | **зависает** после итоговой строки, убит внешним `timeout` на 150 с (код 124) — известная проблема, без изменений |
 | `python -m compileall -q core/actions/filesystem.py core/agent.py config/settings.py` | без ошибок | сам, код 0 |
+
+
+---
+
+## S7 — Shadow sandbox: запрещённое имя нельзя сослать, алиас не проходит
+
+**Сделано.** Правки: `core/shadow/sandbox.py` (`_BUILTINS_ROOTS`,
+`_alias_target_names`, `_safety_violation`, `safety_check`).
+
+### Что было сломано
+
+`_FORBIDDEN_NAMES` проверялся только когда `ast.Call.func` — прямое
+`ast.Name` (`core/shadow/sandbox.py:170`). Любая непрямая ссылка обходила
+проверку: `f = open` и затем `f("x", "w")`; `g = getattr` и затем
+`g(__builtins__, "open")`; тень `open = ...`; распаковка `a, f = 1, open`;
+`functools.partial(open)`; `__builtins__.open(...)`; вызов `x.open(...)`
+через атрибут произвольного объекта. Все они — ссылки на одно и то же
+запрещённое имя, и все проходили в оценку.
+
+### Как устроено теперь
+
+Единое правило: **запрещённое имя не должно быть ссылаемо нигде** — ни в
+Load, ни в Store:
+
+* `ast.Name` с идентификатором из `_FORBIDDEN_NAMES` → отказ (сообщение
+  различает `reference` и `shadowing` по контексту); это закрывает вызов,
+  алиас, тень, распаковку, аргумент `partial`, subscript-таблицу;
+* `ast.Name` из `_BUILTINS_ROOTS` (`builtins`, `__builtins__`, `__builtin__`)
+  → отказ: `import builtins` и так отсекает allow-list импортов, живой путь —
+  ссылка на `__builtins__` внутри исполняемого кода;
+* `ast.Attribute` с `attr` из `_FORBIDDEN_NAMES` → отказ (`x.open(...)`);
+  dunder-атрибуты блокировались и раньше;
+* прежние проверки (allow-list импортов, прямой запрет вызова, dunder) на
+  месте — регрессионный контроль подтверждает легитимный путь генератора.
+
+Живая проверка изоляции оценочного subprocess подтверждена и закреплена
+тестом: `CodeEvaluator.run_source` исполняет код во временной папке
+(`atlas-code-eval-…`) с вычищенным окружением — `JARVIS_HOME` и прочие
+переменные хоста в дочернем процессе отсутствуют. Эти свойства существовали
+до S7 (наряд требовал «плюс», но они уже были реализованы); тест не даёт им
+регрессировать.
+
+### Решения, принятые сознательно
+
+* **Ссылка на имя запрещена полностью, а не только «вызов по алиасу».**
+  Разрешение ссылок через карту алиасов требовало бы отдельно закрывать
+  subscript, распаковку, `partial` и будущие формы; запрет ссылки проще и
+  сильнее. Легитимному сгенерированному инструменту ссылаться на
+  `open/eval/getattr/...` незачем — это и есть denylist-философия песочницы.
+* **Возможная цена:** переменная с именем `input` или `vars` в
+  модельно-сгенерированном коде теперь отклоняется как тень. Это осознанный
+  сдвиг в сторону отказа: quality-проверки не могут перевесить
+  security-решение, а генератор перегенерирует код.
+* Порядок обхода AST даёт для `__builtins__.open` сообщение
+  «forbidden attribute access: open», а не про корень — тест допускает оба.
+
+### Тест
+
+`tests/regressions/test_s7_shadow_sandbox_ast.py` — 12 проверок:
+
+| Что закрепляет | Проверка |
+|---|---|
+| наряд: `f = open; f("x","w")` | отклонено, в причине есть `open` |
+| наряд: `import builtins; builtins.open` | отклонено (allow-list импортов) |
+| наряд: `__builtins__.open` | отклонено (атрибут или корень) |
+| наряд: `getattr(__builtins__, "open")` | отклонено |
+| алиас рефлексии `g = getattr` | отклонено |
+| тень `open = __import__` | отклонено (`shadowing`) |
+| распаковка `a, f = 1, open` | отклонено |
+| walrus `(f := open)(...)` | отклонено |
+| `functools.partial(open, ...)` | отклонено (аргумент-ссылка) |
+| `params.open(...)` через атрибут | отклонено |
+| subscript-таблица `{'f': open}` | отклонено |
+| легитимный путь | шаблонный инструмент проходит `safety_check` и `test_source` → `SAFE_TO_EVALUATE` |
+| изоляция subprocess (живая) | cwd временный, `JARVIS_HOME` отсутствует |
+
+### Проверка
+
+| Прогон | Результат | Завершение процесса |
+|---|---|---|
+| `pytest tests/regressions/test_s7_shadow_sandbox_ast.py tests/test_hardening_shadow.py tests/test_sprint8.py` | `25 passed in 1.45s` | сам, код 0 |
+| `pytest tests/regressions` | `245 passed, 1 skipped, 2 warnings in 24.57s` | сам, код 0 |
+| **полный pytest `tests/`** | `1125 passed, 3 skipped, 3 warnings in 194.39s (0:03:14)` — артефакт `artifacts/full_run_s7_complete.log` | **зависает** после итоговой строки: тесты прошли за 3 мин, процесс снят `taskkill` (~10 мин после старта) — известная проблема, чинит задача T1 |
+| `python -m compileall -q core/shadow/sandbox.py` | без ошибок | сам, код 0 |
 
 
 `pytest` зависает **после** печати итоговой строки, на завершении процесса.
