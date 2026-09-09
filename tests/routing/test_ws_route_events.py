@@ -82,7 +82,9 @@ def test_ws_route_event_contains_full_decision(settings):
     assert decision["kind"] == "action"
     assert decision["tool"] == "system_status"
     assert decision["tier"] in ("shortcut", "semantic", "pattern")
-    assert decision["llm_available"] is False
+    # C2: llm_available стал честным — на машине с DPAPI-ключом он True.
+    # Поле обязано присутствовать и быть булевым, значение зависит от среды.
+    assert isinstance(decision["llm_available"], bool)
     assert isinstance(decision["latency_ms"], (int, float))
 
 

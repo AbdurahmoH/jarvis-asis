@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import json
 from pathlib import Path
 
@@ -60,6 +62,8 @@ def test_document_text_adapter(tmp_path: Path):
     assert read_document(path) == "local knowledge"
 
 
+@pytest.mark.skipif(not Settings().local_llm_enabled,
+                    reason="local LLM disabled in cloud-only build")
 def test_offline_roles_share_one_local_backend_object(tmp_path: Path):
     model = tmp_path / "model.gguf"
     model.write_bytes(b"fixture")
